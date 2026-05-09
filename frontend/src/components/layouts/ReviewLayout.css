@@ -1,0 +1,181 @@
+.review-logo {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 20px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--app-text);
+  letter-spacing: -0.02em;
+  border-bottom: 1px solid var(--app-border);
+  background: linear-gradient(180deg, #ffffff 0%, #faf7f7 100%);
+}
+
+.review-logo .review-logo-icon {
+  font-size: 22px;
+  color: var(--app-primary);
+}
+
+.review-sider .ant-menu-item {
+  margin-inline: 10px !important;
+  width: calc(100% - 20px) !important;
+  border-radius: 8px !important;
+}
+
+.review-sider .ant-menu-item-selected {
+  background: var(--app-primary-soft) !important;
+  color: var(--app-primary) !important;
+  font-weight: 600;
+}
+
+.review-sider .ant-menu-item-selected .anticon {
+  color: var(--app-primary) !important;
+}
+
+.review-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  padding: 0 28px;
+  height: 60px;
+  line-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+}
+
+.review-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.review-header-left .review-page-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--app-text);
+  letter-spacing: -0.02em;
+}
+
+.review-header-right {
+  display: flex;
+  align-items: center;
+}
+
+.review-header-right .ant-btn-link {
+  color: var(--app-text-muted);
+  font-weight: 500;
+}
+
+.review-header-right .ant-btn-link:hover {
+  color: var(--app-primary);
+}
+
+.review-header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  color: var(--app-text);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.review-header-icon:hover {
+  background: rgba(198, 40, 40, 0.06);
+  color: var(--app-primary);
+}
+
+.review-header-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px 4px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--app-border);
+  background: #faf7f7;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.review-header-user:hover {
+  border-color: rgba(198, 40, 40, 0.32);
+  box-shadow: 0 2px 8px rgba(198, 40, 40, 0.08);
+}
+
+.review-header-user .ant-typography {
+  max-width: 120px;
+}
+
+.review-content {
+  padding: 24px 28px 32px;
+  background: transparent;
+  min-height: calc(100vh - 60px);
+}
+
+.review-queue-container {
+  animation: fadeIn 0.3s ease;
+}
+
+.review-queue-header {
+  margin-bottom: 24px;
+}
+
+.review-queue-filters {
+  margin-bottom: 16px;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.stat-card {
+  border-radius: 12px;
+  border: 1px solid var(--app-border);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--app-shadow-md);
+}
+
+.stat-card-blue {
+  border-left: 3px solid var(--app-primary);
+}
+
+.stat-card-green {
+  border-left: 3px solid #059669;
+}
+
+.stat-card-red {
+  border-left: 3px solid var(--app-primary);
+}
+
+.stat-card-orange {
+  border-left: 3px solid #d97706;
+}
+
+.review-dashboard {
+  animation: fadeIn 0.3s ease;
+}
+
+.review-dashboard-header {
+  margin-bottom: 24px;
+}

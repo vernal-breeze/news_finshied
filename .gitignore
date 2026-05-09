@@ -1,0 +1,39 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# Node.js
+node_modules/
+frontend/dist/
+
+# Environment
+.env
+backend/.env
+backend/.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+
+# Database
+backend/data/
+*.db
+*.sqlite3
+
+# Backup
+*.md.docx
+*.md.pptx
+新闻采编系统_*.docx
+新闻采编系统_*.pptx
+
+# Docker
+docker-data/

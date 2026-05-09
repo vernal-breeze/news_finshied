@@ -1,0 +1,63 @@
+.editor-login-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  background: var(--app-bg);
+}
+
+.editor-login-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(198, 40, 40, 0.07), transparent 55%);
+  pointer-events: none;
+}
+
+.editor-login-background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.editor-login-gradient {
+  display: none;
+}
+
+.editor-login-card {
+  width: 100%;
+  max-width: 420px;
+  margin: 24px;
+  padding: 44px 40px;
+  border-radius: 14px;
+  box-shadow: var(--app-shadow-md);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  position: relative;
+  z-index: 1;
+}
+
+.editor-login-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.editor-login-logo {
+  margin-bottom: 20px;
+}
+
+.editor-login-logo .editor-login-icon {
+  font-size: 44px;
+  color: var(--app-primary);
+}
+
+.editor-login-footer {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--app-border);
+}

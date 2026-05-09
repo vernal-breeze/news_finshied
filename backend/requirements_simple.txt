@@ -1,0 +1,15 @@
+# 简化版requirements，避免编译问题
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+pydantic-settings
+python-dotenv
+openai
+requests
+python-multipart
+aiofiles
+httpx
+beautifulsoup4
+lxml
+

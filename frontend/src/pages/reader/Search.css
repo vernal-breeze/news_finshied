@@ -1,0 +1,86 @@
+.reader-search {
+  min-height: 100vh;
+  background: var(--app-bg);
+  background-image:
+    radial-gradient(ellipse 100% 60% at 50% -10%, rgba(198, 40, 40, 0.06), transparent 55%);
+}
+
+.reader-search-main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px clamp(16px, 4vw, 24px) 48px;
+}
+
+.search-box-card {
+  margin-bottom: 16px;
+  border-radius: var(--app-radius-lg);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+  background: var(--app-surface);
+}
+
+.search-filter-card {
+  margin-bottom: 24px;
+  border-radius: var(--app-radius-lg);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-sm);
+  background: var(--app-surface);
+}
+
+.hot-keyword {
+  cursor: pointer;
+  padding: 4px 12px;
+  font-size: 14px;
+  transition: all 0.3s;
+}
+
+.hot-keyword:hover {
+  background: var(--app-primary);
+  color: #fff;
+  border-color: var(--app-primary);
+}
+
+.results-count {
+  display: block;
+  margin-bottom: 16px;
+}
+
+.search-result-item {
+  cursor: pointer;
+  padding: 16px 0 !important;
+}
+
+.search-result-item:hover {
+  background: rgba(198, 40, 40, 0.04);
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+  margin-left: -12px;
+  margin-right: -12px;
+  border-radius: 8px;
+}
+
+.result-title {
+  margin-bottom: 8px !important;
+  transition: color 0.3s;
+}
+
+.result-title:hover {
+  color: var(--app-primary);
+}
+
+.reader-search .reader-footer {
+  text-align: center;
+  padding: 28px 24px 40px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  border-top: 1px solid var(--app-border);
+  margin-top: 32px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+/* 响应式 */
+@media (max-width: 768px) {
+  .reader-search-main {
+    padding: 16px;
+  }
+}
