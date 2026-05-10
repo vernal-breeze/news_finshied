@@ -83,11 +83,6 @@ _API_FEEDS: dict[str, dict] = {
 
 # 搜索引擎源配置（真正的关键词搜索）
 _SEARCH_FEEDS: dict[str, dict] = {
-    "bing_news": {
-        "name": "Bing 新闻",
-        "category": "综合",
-        "type": "bing",
-    },
     "sogou_news": {
         "name": "搜狗新闻",
         "category": "综合",
@@ -189,6 +184,35 @@ def _fetch_rss_feed(source: str, keyword: str = "", max_results: int = 10) -> li
 
             if len(results) >= max_results:
                 break
+
+        # 回退：关键词过滤无结果时，返回最新内容（不限关键词）
+        if not results and keyword:
+            for item in items:
+                title_el = item.find('title')
+                link_el = item.find('link')
+                desc_el = item.find('description')
+
+                title = title_el.text.strip() if title_el is not None and title_el.text else ""
+                link = link_el.text.strip() if link_el is not None and link_el.text else ""
+                desc = desc_el.text.strip() if desc_el is not None and desc_el.text else ""
+
+                if desc:
+                    desc = re.sub(r'<[^>]+>', '', desc).strip()[:300]
+
+                if not title or len(title) < 5 or title in seen:
+                    continue
+
+                seen.add(title)
+                results.append({
+                    "title": title,
+                    "url": link,
+                    "snippet": desc,
+                    "source": config["name"],
+                    "category": config["category"],
+                    "pub_date": "",
+                })
+                if len(results) >= max_results:
+                    break
 
         return results
     except Exception as e:
@@ -295,18 +319,12 @@ def _fetch_api_feed(source: str, keyword: str = "", max_results: int = 10) -> li
                     break
 
         elif config["type"] == "bilibili":
-            # B站热门: 支持关键词过滤
+            # B站热门: 热搜榜不按关键词过滤，返回当前热榜
             videos = data.get("data", {}).get("list", [])
             for v in videos:
                 title = v.get("title", "")
                 if not title or title in seen:
                     continue
-                # 关键词过滤：匹配标题或描述
-                if keyword:
-                    keyword_lower = keyword.lower()
-                    desc = (v.get("desc", "") or "").lower()
-                    if keyword_lower not in title.lower() and keyword_lower not in desc:
-                        continue
                 seen.add(title)
                 bvid = v.get("bvid", "")
                 stat = v.get("stat", {})
@@ -692,9 +710,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10,
 
     # 如果指定了特定搜索源
     if source in _SEARCH_FEEDS:
-        if source == "bing_news":
-            return _fetch_bing_news(query, max_results)
-        elif source == "sogou_news":
+        if source == "sogou_news":
             return _fetch_sogou_news(query, max_results)
         return []
 
@@ -702,15 +718,8 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10,
     all_items: list[dict] = []
     seen_titles: set[str] = set()
 
-    # 如果有关键词，优先用搜索引擎获取精准结果（Bing + 搜狗双引擎）
+    # 如果有关键词，优先用搜索引擎获取精准结果（搜狗新闻）
     if query:
-        bing_results = _fetch_bing_news(query, max_results)
-        for item in bing_results:
-            t = item.get("title", "")
-            if t and t not in seen_titles:
-                seen_titles.add(t)
-                all_items.append(item)
-
         sogou_results = _fetch_sogou_news(query, max_results)
         for item in sogou_results:
             t = item.get("title", "")
