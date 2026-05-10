@@ -51,7 +51,7 @@ def _format_article(article: Article, db: Session = None) -> dict:
         "tags_str": article.tags or "",
         "author_id": article.author_id,
         "author": author_name,
-        "editor_id": article.editor_id,
+        "editor_id": getattr(article, 'editor_id', None),
         "clue_id": article.clue_id,
         "topic_id": article.topic_id,
         "like_count": article.like_count or 0,

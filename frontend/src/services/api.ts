@@ -74,6 +74,16 @@ const api = axios.create({
 // 请求拦截器
 api.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
+    // data 为空（null/undefined）时删除 Content-Type，避免 uvicorn 因 "application/json + 空 body" 报 400
+    if (config.data == null && config.method && config.method.toLowerCase() !== 'get') {
+      const h = config.headers
+      if (h && typeof h.delete === 'function') {
+        h.delete('Content-Type')
+      } else if (h && typeof h === 'object') {
+        delete (h as Record<string, unknown>)['Content-Type']
+        delete (h as Record<string, unknown>)['content-type']
+      }
+    }
     // FormData 不能使用默认的 application/json，否则后端无法解析 multipart，会 422
     if (config.data instanceof FormData) {
       const h = config.headers
@@ -181,11 +191,14 @@ export const clueAPI = {
   batchDelete: (ids: number[]) => api.post('/api/clues/batch-delete', ids),
   analyze: (id: number) => api.post(`/api/clues/${id}/analyze`),
   collect: (params: { url: string; timeRange?: string; maxResults?: number }) =>
-    api.post('/api/clues/collect', null, { params, timeout: 60000 }),
+    api.get('/api/clues/collect', { params, timeout: 60000 }),
   collectMultichannel: (keywords: string, channels: string[], _timeRange?: string, maxResults?: number) =>
-    api.post('/api/clues/collect/multichannel', null, { params: { keywords, channels: channels.join(','), max_results: maxResults }, timeout: 60000 }),
+    api.get('/api/clues/collect/multichannel', { params: { keywords, channels: channels.join(','), max_results: maxResults }, timeout: 60000 }),
   searchInfo: (id: number, data: { keyword: string; engine?: string; source?: string; max_results?: number; exact_match?: boolean }) =>
     api.post(`/api/clues/${id}/search-info`, data, { timeout: 60000 }),
+  getSources: () => api.get('/api/clues/sources'),
+  verifySource: (body: { url: string; type?: string; key?: string }) =>
+    api.post('/api/clues/sources/verify', body, { timeout: 15000 }),
 }
 
 export const articleAPI = {

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # 新闻内容采编系统一键启动脚本
 # 用法:
-#   ./start.sh                 启动前后端
-#   ./start.sh backend         仅启动后端
+#   ./start.sh                 启动 MySQL + 后端 + 前端
+#   ./start.sh backend         仅启动后端（需要 MySQL 已运行）
 #   ./start.sh frontend        仅启动前端
 #   ./start.sh stop            停止服务
 #   ./start.sh restart         重启服务
 #   ./start.sh status          查看状态
-#   ./start.sh logs [backend|frontend]
+#   ./start.sh logs [backend|frontend|mysql]
 
 set -euo pipefail
 
@@ -150,7 +150,7 @@ check_env_file() {
     echo -e "${YELLOW}│  首次使用提示                                           │${NC}"
     echo -e "${YELLOW}│                                                         │${NC}"
     echo -e "${YELLOW}│  ${NC}检测到缺少环境变量文件，正在创建...                      ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│  ${NC}后端会使用默认配置启动，部分 AI 功能需 API Key              ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│  ${NC}后端会使用 MySQL 数据库启动                               ${YELLOW}│${NC}"
     echo -e "${YELLOW}│                                                         │${NC}"
     echo -e "${YELLOW}│  ${NC}如需使用 AI 功能，请编辑 ${BLUE}backend/.env${NC} 填入:          ${YELLOW}│${NC}"
     echo -e "${YELLOW}│  ${NC}  SILICONFLOW_API_KEY=sk-xxx                            ${YELLOW}│${NC}"
@@ -159,6 +159,80 @@ check_env_file() {
     echo ""
     cp "${BACKEND_DIR}/.env.example" "${BACKEND_DIR}/.env"
     log_ok "已自动创建 backend/.env，可后续编辑填入 API Key"
+}
+
+# ============================================================
+# MySQL 管理
+# ============================================================
+
+start_mysql() {
+    log_info "检查 MySQL 状态..."
+
+    # 检查 Docker 是否可用
+    if ! has_cmd docker; then
+        log_error "未检测到 Docker，请先安装 Docker Desktop"
+        log_error "下载地址: https://www.docker.com/products/docker-desktop/"
+        exit 1
+    fi
+
+    # 检查 Docker daemon 是否运行
+    if ! docker info >/dev/null 2>&1; then
+        log_warn "Docker 未运行，正在启动 Docker Desktop..."
+        open -a "Docker Desktop" 2>/dev/null || true
+        local i=0
+        while [ "${i}" -lt 30 ]; do
+            if docker info >/dev/null 2>&1; then
+                break
+            fi
+            sleep 2
+            i=$((i + 1))
+        done
+        if ! docker info >/dev/null 2>&1; then
+            log_error "Docker 启动超时，请手动启动 Docker Desktop"
+            exit 1
+        fi
+        log_ok "Docker 已启动"
+    fi
+
+    # 检查 MySQL 容器是否已运行
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^news_editor_mysql$'; then
+        log_ok "MySQL 容器已在运行"
+    else
+        # 检查容器是否存在但已停止
+        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^news_editor_mysql$'; then
+            log_info "启动已停止的 MySQL 容器..."
+            docker start news_editor_mysql >/dev/null
+        else
+            log_info "首次启动，创建 MySQL 容器..."
+            cd "${PROJECT_ROOT}"
+            docker compose up -d mysql 2>&1
+        fi
+
+        # 等待 MySQL 健康
+        log_info "等待 MySQL 就绪..."
+        local i=0
+        while [ "${i}" -lt 30 ]; do
+            local status
+            status="$(docker inspect --format='{{.State.Health.Status}}' news_editor_mysql 2>/dev/null || echo 'unknown')"
+            if [ "${status}" = "healthy" ]; then
+                break
+            fi
+            sleep 2
+            i=$((i + 1))
+        done
+
+        if [ "${status}" != "healthy" ]; then
+            log_error "MySQL 启动超时，查看日志: docker compose logs mysql"
+            exit 1
+        fi
+        log_ok "MySQL 已就绪"
+    fi
+
+    # 确保 pymysql 已安装
+    if ! python3 -c "import pymysql" 2>/dev/null; then
+        log_info "安装 PyMySQL 驱动..."
+        python3 -m pip install pymysql cryptography >/dev/null 2>&1 || true
+    fi
 }
 
 ensure_backend_deps() {
@@ -217,6 +291,8 @@ init_database() {
     fi
     export PYTHONPATH="${BACKEND_DIR}:${PYTHONPATH:-}"
     mkdir -p data
+
+    # 通过 SQLAlchemy create_all 创建/更新表
     python3 -c "from app.database import Base, engine; import app.models; Base.metadata.create_all(bind=engine)" >/dev/null
     log_ok "数据库初始化完成"
 }
@@ -285,6 +361,17 @@ stop_services() {
 show_status() {
     echo ""
     echo -e "${CYAN}========== 服务状态 ==========${NC}"
+
+    # MySQL 状态
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^news_editor_mysql$'; then
+        local mysql_status
+        mysql_status="$(docker inspect --format='{{.State.Health.Status}}' news_editor_mysql 2>/dev/null || echo 'running')"
+        echo -e "${GREEN}MySQL: ${mysql_status}${NC} (Docker, port 3306)"
+    else
+        echo -e "${RED}MySQL: 未运行${NC} (执行 ./start.sh 启动)"
+    fi
+
+    # 后端状态
     if [ -f "${BACKEND_PID_FILE}" ] && pid_alive "$(cat "${BACKEND_PID_FILE}")"; then
         echo -e "${GREEN}后端: 运行中${NC} PID=$(cat "${BACKEND_PID_FILE}") URL=http://localhost:${BACKEND_PORT}"
     elif [ -n "$(port_pids "${BACKEND_PORT}")" ]; then
@@ -293,6 +380,7 @@ show_status() {
         echo -e "${RED}后端: 未运行${NC}"
     fi
 
+    # 前端状态
     if [ -f "${FRONTEND_PID_FILE}" ] && pid_alive "$(cat "${FRONTEND_PID_FILE}")"; then
         echo -e "${GREEN}前端: 运行中${NC} PID=$(cat "${FRONTEND_PID_FILE}") URL=http://localhost:${FRONTEND_PORT}"
     elif [ -n "$(port_pids "${FRONTEND_PORT}")" ]; then
@@ -300,6 +388,7 @@ show_status() {
     else
         echo -e "${RED}前端: 未运行${NC}"
     fi
+
     echo -e "${CYAN}日志:${NC}"
     echo "  后端: ${BACKEND_LOG_FILE}"
     echo "  前端: ${FRONTEND_LOG_FILE}"
@@ -309,6 +398,10 @@ show_status() {
 show_logs() {
     local svc="${1:-all}"
     case "${svc}" in
+        mysql)
+            cd "${PROJECT_ROOT}"
+            docker compose logs -f mysql
+            ;;
         backend)
             tail -f "${BACKEND_LOG_FILE}"
             ;;
@@ -328,12 +421,13 @@ show_logs() {
 usage() {
     cat <<EOF
 用法:
-  ./start.sh [backend|frontend|stop|restart|status|logs|check|all]
+  ./start.sh [backend|frontend|stop|restart|status|logs|all]
 示例:
-  ./start.sh
-  ./start.sh backend
-  ./start.sh stop
-  ./start.sh logs backend
+  ./start.sh                 # 启动 MySQL + 后端 + 前端
+  ./start.sh backend         # 仅启动后端
+  ./start.sh stop            # 停止所有服务
+  ./start.sh status          # 查看状态
+  ./start.sh logs mysql      # 查看 MySQL 日志
 EOF
 }
 
@@ -372,33 +466,11 @@ main() {
         logs)
             show_logs "${2:-all}"
             ;;
-        check)
-            if ! wait_http_up "http://127.0.0.1:${BACKEND_PORT}${BACKEND_HEALTH_PATH}" 2; then
-                log_error "后端未运行，请先执行 ./start.sh backend 或 ./start.sh"
-                exit 1
-            fi
-            python3 - <<PY
-import requests
-base = "http://127.0.0.1:${BACKEND_PORT}"
-status = requests.get(base + "${BACKEND_HEALTH_PATH}", timeout=5).status_code
-print("status_code=", status)
-try:
-    r = requests.post(base + "/api/clues/collect/multichannel", params={
-        "keywords": "人工智能",
-        "channels": "news",
-        "max_results": 3,
-    }, timeout=20)
-    print("clue_collect_code=", r.status_code)
-    data = r.json().get("data", {})
-    print("clue_collect_created=", data.get("created"))
-except Exception as e:
-    print("clue_collect_error=", str(e))
-PY
-            ;;
         all)
             check_env_file
             check_python
             check_node
+            start_mysql
             ensure_backend_deps
             ensure_frontend_deps
             init_database
@@ -409,6 +481,7 @@ PY
             echo -e "前端: ${BLUE}http://localhost:${FRONTEND_PORT}${NC}"
             echo -e "后端: ${BLUE}http://localhost:${BACKEND_PORT}${NC}"
             echo -e "文档: ${BLUE}http://localhost:${BACKEND_PORT}/docs${NC}"
+            echo -e "MySQL: ${BLUE}localhost:3306${NC} (Docker)"
             ;;
         *)
             usage

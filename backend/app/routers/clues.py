@@ -1,15 +1,19 @@
 """线索路由：线索管理、采集、分析"""
 import json
-from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone, timedelta
+import time
 from urllib.parse import urlparse, parse_qs, unquote, quote_plus
 from typing import Optional, List
+import re
+import concurrent.futures
 
 import requests
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 
 from app.core.config import get_settings
 from app.database import get_db
@@ -18,6 +22,333 @@ from app.models.clue import Clue
 
 settings = get_settings()
 router = APIRouter(prefix="/api/clues", tags=["Clues"])
+
+# RSS 源配置（保留稳定可用的中文 RSS 源）
+_RSS_FEEDS: dict[str, dict] = {
+    "ithome": {
+        "url": "https://www.ithome.com/rss/",
+        "name": "IT之家",
+        "category": "科技",
+    },
+    "36kr": {
+        "url": "https://36kr.com/feed",
+        "name": "36氪",
+        "category": "科技",
+    },
+    "sspai": {
+        "url": "https://sspai.com/feed",
+        "name": "少数派",
+        "category": "科技",
+    },
+    "oschina": {
+        "url": "https://www.oschina.net/news/rss",
+        "name": "开源中国",
+        "category": "科技",
+    },
+    "solidot": {
+        "url": "https://www.solidot.org/index.rss",
+        "name": "奇客Solidot",
+        "category": "科技",
+    },
+}
+
+# API/JSON 源配置（非 RSS 格式的 API 源）
+_API_FEEDS: dict[str, dict] = {
+    "zhihu_daily": {
+        "url": "https://news-at.zhihu.com/api/4/news/latest",
+        "name": "知乎日报",
+        "category": "综合",
+        "type": "json",
+    },
+    "baidu_hot": {
+        "url": "https://top.baidu.com/api/board?platform=wise&tab=realtime",
+        "name": "百度热搜",
+        "category": "综合",
+        "type": "baidu",
+    },
+    "toutiao_hot": {
+        "url": "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+        "name": "今日头条",
+        "category": "综合",
+        "type": "toutiao",
+    },
+    "bilibili_hot": {
+        "url": "https://api.bilibili.com/x/web-interface/popular?ps=20",
+        "name": "B站热门",
+        "category": "娱乐",
+        "type": "bilibili",
+    },
+}
+
+
+# 搜索引擎源配置（真正的关键词搜索）
+_SEARCH_FEEDS: dict[str, dict] = {
+    "bing_news": {
+        "name": "Bing 新闻",
+        "category": "综合",
+        "type": "bing",
+    },
+    "sogou_news": {
+        "name": "搜狗新闻",
+        "category": "综合",
+        "type": "sogou",
+    },
+}
+
+
+def _fetch_rss_feed(source: str, keyword: str = "", max_results: int = 10) -> list[dict]:
+    """从 RSS 源获取新闻线索"""
+    config = _RSS_FEEDS.get(source)
+    if not config:
+        return []
+
+    try:
+        # RSS 源超时缩短，避免个别慢源阻塞并发池（如 36kr 有反爬）
+        rss_timeout = min(settings.CRAWLER_TIMEOUT, 8)
+        # 添加随机延迟避免被封
+        import random
+        time.sleep(random.uniform(0.3, 1.0))
+        resp = requests.get(
+            config["url"],
+            headers={"User-Agent": settings.CRAWLER_USER_AGENT},
+            timeout=rss_timeout,
+        )
+        resp.raise_for_status()
+
+        # RSS 可能有格式问题（如 36kr 返回的不是标准 RSS 2.0），尝试多种解析方式
+        results: list[dict] = []
+        seen: set[str] = set()
+
+        # 方式一：标准 RSS XML 解析
+        items = []
+        try:
+            root = ET.fromstring(resp.content)
+            items = root.findall('.//item')
+        except ET.ParseError:
+            # 方式二：用 BeautifulSoup 从 HTML 中找链接
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            for a in soup.select('a[href]'):
+                text = a.get_text(' ', strip=True)
+                href = (a.get('href') or '').strip()
+                if not text or len(text) < 5:
+                    continue
+                if not href.startswith('http'):
+                    continue
+                if text in seen:
+                    continue
+                seen.add(text)
+                results.append({
+                    "title": text,
+                    "url": href,
+                    "snippet": "",
+                    "source": config["name"],
+                    "category": config["category"],
+                    "pub_date": "",
+                })
+                if len(results) >= max_results:
+                    break
+            return results
+
+        for item in items:
+            title_el = item.find('title')
+            link_el = item.find('link')
+            desc_el = item.find('description')
+            pub_date_el = item.find('pubDate')
+
+            title = title_el.text.strip() if title_el is not None and title_el.text else ""
+            link = link_el.text.strip() if link_el is not None and link_el.text else ""
+            desc = desc_el.text.strip() if desc_el is not None and desc_el.text else ""
+            pub_date = pub_date_el.text.strip() if pub_date_el is not None and pub_date_el.text else ""
+
+            # 清理 HTML 标签
+            if desc:
+                desc = re.sub(r'<[^>]+>', '', desc).strip()
+                desc = desc[:300]
+
+            if not title or len(title) < 5:
+                continue
+
+            # 关键词过滤（匹配标题或描述）
+            if keyword:
+                keyword_lower = keyword.lower()
+                if keyword_lower not in title.lower() and keyword_lower not in desc.lower():
+                    continue
+
+            if title in seen:
+                continue
+            seen.add(title)
+
+            results.append({
+                "title": title,
+                "url": link,
+                "snippet": desc,
+                "source": config["name"],
+                "category": config["category"],
+                "pub_date": pub_date,
+            })
+
+            if len(results) >= max_results:
+                break
+
+        return results
+    except Exception as e:
+        print(f"RSS fetch error for {source}: {e}")
+        return []
+
+def _fetch_api_feed(source: str, keyword: str = "", max_results: int = 10) -> list[dict]:
+    """从 API/JSON 源获取新闻线索"""
+    config = _API_FEEDS.get(source)
+    if not config:
+        return []
+
+    results: list[dict] = []
+    try:
+        api_timeout = min(settings.CRAWLER_TIMEOUT, 10)
+        headers = {"User-Agent": settings.CRAWLER_USER_AGENT}
+        # 添加随机延迟避免被封
+        import random
+        time.sleep(random.uniform(0.3, 1.0))
+        # 部分 API 需要 Referer 头（使用主站域名而非 API 子域名）
+        referer_map = {
+            "toutiao": "https://www.toutiao.com/",
+            "bilibili": "https://www.bilibili.com/",
+            "baidu": "https://www.baidu.com/",
+        }
+        if config["type"] in referer_map:
+            headers["Referer"] = referer_map[config["type"]]
+            headers["Accept"] = "application/json, text/plain, */*"
+        resp = requests.get(
+            config["url"],
+            headers=headers,
+            timeout=api_timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        seen: set[str] = set()
+
+        if config["type"] == "json":
+            # 知乎日报: 不按关键词过滤，返回当日全部故事
+            stories = data.get("stories", [])
+            for story in stories:
+                title = story.get("title", "")
+                url = story.get("url", "")
+                if not title or title in seen:
+                    continue
+                seen.add(title)
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "snippet": story.get("hint", ""),
+                    "source": config["name"],
+                    "category": config["category"],
+                    "pub_date": data.get("date", ""),
+                })
+                if len(results) >= max_results:
+                    break
+
+        elif config["type"] == "baidu":
+            # 百度热搜: 不按关键词过滤，返回当前热榜
+            cards = data.get("data", {}).get("cards", [])
+            for card in cards:
+                for content_block in card.get("content", []):
+                    if isinstance(content_block, dict):
+                        items = content_block.get("content", [])
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            word = item.get("word", "")
+                            if not word or word in seen:
+                                continue
+                            seen.add(word)
+                            results.append({
+                                "title": word,
+                                "url": item.get("url", ""),
+                                "snippet": f"百度热搜 #{item.get('index', '')}",
+                                "source": config["name"],
+                                "category": config["category"],
+                                "pub_date": "",
+                            })
+                            if len(results) >= max_results:
+                                break
+                    if len(results) >= max_results:
+                        break
+                if len(results) >= max_results:
+                    break
+
+        elif config["type"] == "toutiao":
+            # 今日头条热搜: 不按关键词过滤，返回当前热榜
+            items = data.get("data", [])
+            for item in items:
+                title = item.get("Title", "")
+                if not title or title in seen:
+                    continue
+                seen.add(title)
+                results.append({
+                    "title": title,
+                    "url": item.get("Url", ""),
+                    "snippet": f"热度: {item.get('HotValue', 0)}, 标签: {item.get('Label', '')}",
+                    "source": config["name"],
+                    "category": config["category"],
+                    "pub_date": "",
+                })
+                if len(results) >= max_results:
+                    break
+
+        elif config["type"] == "bilibili":
+            # B站热门: 支持关键词过滤
+            videos = data.get("data", {}).get("list", [])
+            for v in videos:
+                title = v.get("title", "")
+                if not title or title in seen:
+                    continue
+                # 关键词过滤：匹配标题或描述
+                if keyword:
+                    keyword_lower = keyword.lower()
+                    desc = (v.get("desc", "") or "").lower()
+                    if keyword_lower not in title.lower() and keyword_lower not in desc:
+                        continue
+                seen.add(title)
+                bvid = v.get("bvid", "")
+                stat = v.get("stat", {})
+                results.append({
+                    "title": title,
+                    "url": f"https://www.bilibili.com/video/{bvid}" if bvid else v.get("short_link_v2", ""),
+                    "snippet": f"播放: {stat.get('view', 0)}, 弹幕: {stat.get('danmaku', 0)}, 描述: {(v.get('desc', '') or '')[:60]}",
+                    "source": config["name"],
+                    "category": config["category"],
+                    "pub_date": str(v.get("pubdate", "")),
+                })
+                if len(results) >= max_results:
+                    break
+
+        return results
+    except Exception as e:
+        print(f"API fetch error for {source}: {e}")
+        return []
+
+
+def _fetch_all_rss(keyword: str = "", max_results: int = 20) -> list[dict]:
+    """从所有 RSS 源并发获取新闻"""
+    all_results: list[dict] = []
+    seen: set[str] = set()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(_RSS_FEEDS)) as executor:
+        future_map = {executor.submit(_fetch_rss_feed, source, keyword, max_results): source for source in _RSS_FEEDS}
+        timeout = settings.CRAWLER_TIMEOUT + 10
+        for future in concurrent.futures.as_completed(future_map, timeout=timeout):
+            try:
+                results = future.result(timeout=5)
+                for item in results:
+                    title = item.get("title", "")
+                    if title not in seen:
+                        seen.add(title)
+                        all_results.append(item)
+            except concurrent.futures.TimeoutError:
+                pass
+            except Exception:
+                pass
+
+    return all_results
 
 
 class ClueCreate(BaseModel):
@@ -37,6 +368,16 @@ class ClueUpdate(BaseModel):
     status: Optional[str] = None
     news_value_score: Optional[float] = None
     propagation_potential: Optional[float] = None
+
+
+def _to_beijing(dt):
+    """将 UTC datetime 转为东八区（北京时间）ISO 字符串"""
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    bj = dt.astimezone(timezone(timedelta(hours=8)))
+    return bj.isoformat()
 
 
 def _serialize_clue(clue: Clue) -> dict:
@@ -62,8 +403,9 @@ def _serialize_clue(clue: Clue) -> dict:
         "news_value_score": clue.news_value_score or 0,
         "propagation_potential": clue.propagation_potential or 0,
         "status": status_map.get(clue.status or "", clue.status or "pending"),
-        "created_at": clue.created_at.isoformat() if clue.created_at else "",
-        "processed_at": clue.processed_at.isoformat() if clue.processed_at else None,
+        "created_at": _to_beijing(clue.created_at) if clue.created_at else "",
+        "processed_at": _to_beijing(clue.processed_at) if clue.processed_at else None,
+        "category": clue.category or "",
     }
 
 
@@ -78,18 +420,15 @@ def _search_suffix(source: str) -> str:
     mapping = {
         "news": "",
         "all": "",
-        "news_sites": "",
-        "tencent": "腾讯新闻",
-        "netease": "网易新闻",
-        "sina": "新浪新闻",
-        "ifeng": "凤凰网",
-        "thepaper": "澎湃新闻",
-        "sohu": "搜狐新闻",
-        "toutiao": "今日头条",
-        "weibo": "微博",
-        "social_media": "知乎 小红书 微博",
-        "government": "政府 公告 政策",
-        "social": "知乎 微博",
+        "36kr": "36氪",
+        "ithome": "IT之家",
+        "sspai": "少数派",
+        "oschina": "开源中国",
+        "solidot": "奇客",
+        "zhihu_daily": "知乎日报",
+        "baidu_hot": "百度热搜",
+        "toutiao_hot": "今日头条",
+        "bilibili_hot": "B站热门",
     }
     return mapping.get(source, "")
 
@@ -126,19 +465,25 @@ def _looks_like_error_page(title: str, snippet: str) -> bool:
     return any(marker in blob for marker in bad_markers)
 
 
-def _probe_url(url: str) -> tuple[bool, str, str, str]:
-    """验证候选来源是否真能打开，避免把错误页当成线索。"""
+def _probe_url(url: str, quick: bool = True) -> tuple[bool, str, str, str]:
+    """验证候选来源是否真能打开，避免把错误页当成线索。"quick=True" 时只快速检查状态码，不解析页面内容。"""
     if not url:
         return False, "", "", ""
     try:
-        resp = requests.get(
+        # 快速模式：只检查 HEAD，不超过 3 秒
+        timeout = 3 if quick else settings.CRAWLER_TIMEOUT
+        method = requests.head if quick else requests.get
+        resp = method(
             url,
             headers={"User-Agent": settings.CRAWLER_USER_AGENT},
-            timeout=settings.CRAWLER_TIMEOUT,
+            timeout=timeout,
             allow_redirects=True,
         )
         if resp.status_code >= 400:
             return False, "", "", ""
+        # 快速模式只检查可达性
+        if quick:
+            return True, "", "", resp.url
         content_type = resp.headers.get("content-type", "")
         if "text/html" not in content_type and "application/xhtml" not in content_type:
             return True, "", "", resp.url
@@ -160,199 +505,277 @@ def _fetch_bing_news(keyword: str, max_results: int = 10) -> list[dict]:
     if not query:
         return []
     try:
+        # 添加随机延迟避免被封
+        import random
+        time.sleep(random.uniform(0.5, 1.5))
+
         resp = requests.get(
             "https://www.bing.com/news/search",
-            params={"q": query},
-            headers={"User-Agent": settings.CRAWLER_USER_AGENT},
-            timeout=settings.CRAWLER_TIMEOUT,
+            params={"q": query, "setlang": "zh-CN", "cc": "CN", "form": "HDRSC3"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
+                "Cache-Control": "no-cache",
+            },
+            timeout=12,
+            allow_redirects=True,
         )
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         results: list[dict] = []
-        seen = set()
+        seen: set[str] = set()
+
+        # Bing 新闻卡片选择器（按优先级）
+        selectors = [
+            ".news-card a[href]",           # 标准新闻卡片
+            ".news-card-body a[href]",      # 卡片正文链接
+            "a.title[href]",                # 标题链接
+            "div.card-with-cluster a[href]", # 集群卡片
+            "h2 a[href]",                   # h2 标题
+            "h3 a[href]",                   # h3 标题
+            "a[href*='news'][data-url]",    # 带 data-url 的新闻链接
+        ]
+
+        for selector in selectors:
+            for a in soup.select(selector):
+                text = a.get_text(" ", strip=True)
+                href = (a.get("href") or a.get("data-url") or "").strip()
+
+                if not text or len(text) < 6 or len(text) > 200:
+                    continue
+                if not href.startswith("http"):
+                    continue
+                if any(d in href for d in ["bing.com", "microsoft.com", "go.microsoft"]):
+                    continue
+                if text in seen or _looks_like_error_page(text, ""):
+                    continue
+
+                seen.add(text)
+                # 尝试获取摘要
+                snippet = ""
+                parent = a.find_parent(["div", "article"])
+                if parent:
+                    desc_el = parent.select_one(".snippet, .descripion, p")
+                    if desc_el:
+                        snippet = desc_el.get_text(strip=True)[:200]
+
+                results.append({
+                    "title": text,
+                    "url": href,
+                    "snippet": snippet,
+                    "source": "Bing 新闻",
+                    "category": "综合",
+                })
+
+                if len(results) >= max_results:
+                    return results
+
+        # 回退：解析所有外部链接
         for a in soup.select("a[href]"):
             text = a.get_text(" ", strip=True)
             href = (a.get("href") or "").strip()
-            if len(text) < 10 or len(text) > 150 or not href.startswith("http"):
+
+            if not text or len(text) < 8 or len(text) > 200:
                 continue
-            if "bing.com" in href:
+            if not href.startswith("http"):
+                continue
+            if any(d in href for d in ["bing.com", "microsoft.com", "go.microsoft"]):
                 continue
             if text in seen or _looks_like_error_page(text, ""):
                 continue
+
+            skip_patterns = ["增值电信", "ICP备", "公网安备", "隐私", "Cookie", "法律声明", "广告", "登录", "注册"]
+            if any(p in text for p in skip_patterns):
+                continue
+
             seen.add(text)
             results.append({
                 "title": text,
                 "url": href,
                 "snippet": "",
                 "source": "Bing 新闻",
+                "category": "综合",
             })
+
             if len(results) >= max_results:
                 break
+
         return results
-    except Exception:
+    except Exception as e:
+        print(f"Bing news fetch error: {e}")
         return []
 
 
-# 各新闻站点直接抓取配置
-_NEWS_SITE_CONFIG: dict[str, dict] = {
-    "tencent": {
-        "url": "https://news.qq.com/",
-        "name": "腾讯新闻",
-        "link_sel": "a[href]",
-        "url_pattern": "qq.com",
-    },
-    "netease": {
-        "url": "https://news.163.com/",
-        "name": "网易新闻",
-        "link_sel": "a[href]",
-        "url_pattern": "163.com/data/article/",
-    },
-    "sina": {
-        "url": "https://news.sina.com.cn/",
-        "name": "新浪新闻",
-        "link_sel": "a[href]",
-        "url_pattern": "sina.com.cn",
-    },
-    "ifeng": {
-        "url": "https://news.ifeng.com/",
-        "name": "凤凰网",
-        "link_sel": "a[href]",
-        "url_pattern": "ifeng.com/c/",
-    },
-    "sohu": {
-        "url": "https://news.sohu.com/",
-        "name": "搜狐新闻",
-        "link_sel": "a[href]",
-        "url_pattern": "sohu.com/a/",
-    },
-}
-
-
-def _fetch_site_news(source: str, keyword: str, max_results: int = 10) -> list[dict]:
-    """直接从新闻站点首页抓取最新新闻标题和链接（不做关键词过滤）。"""
-    config = _NEWS_SITE_CONFIG.get(source)
-    if not config:
+def _fetch_sogou_news(keyword: str, max_results: int = 10) -> list[dict]:
+    """通过搜狗新闻搜索采集线索（国内备用搜索引擎）。"""
+    query = keyword.strip()
+    if not query:
         return []
     try:
+        import random
+        time.sleep(random.uniform(0.5, 1.5))
+
         resp = requests.get(
-            config["url"],
-            headers={"User-Agent": settings.CRAWLER_USER_AGENT},
-            timeout=settings.CRAWLER_TIMEOUT,
+            "https://news.sogou.com/news",
+            params={"query": query, "sort": 1},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Referer": "https://news.sogou.com/",
+            },
+            timeout=12,
+            allow_redirects=True,
         )
         resp.raise_for_status()
-        # 修正编码（部分站点返回 ISO-8859-1，实际为 UTF-8）
-        if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
-            resp.encoding = resp.apparent_encoding or "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
         results: list[dict] = []
-        seen = set()
-        for a in soup.select(config["link_sel"]):
+        seen: set[str] = set()
+
+        # 搜狗新闻结果选择器
+        for item in soup.select(".news-list li, .vrwrap, .rb"):
+            a = item.select_one("h3 a[href], .txt-tag a[href], a[href]")
+            if not a:
+                continue
             text = a.get_text(" ", strip=True)
             href = (a.get("href") or "").strip()
-            if not text or len(text) < 8 or len(text) > 120:
+
+            if not text or len(text) < 6:
                 continue
-            if config["url_pattern"] not in href:
+            if not href.startswith("http"):
                 continue
             if text in seen:
                 continue
-            if href.startswith("//"):
-                href = f"https:{href}"
+
             seen.add(text)
+            snippet = ""
+            desc = item.select_one(".txt-info, .str-text-info, p")
+            if desc:
+                snippet = desc.get_text(strip=True)[:200]
+
             results.append({
                 "title": text,
                 "url": href,
-                "snippet": "",
-                "source": config["name"],
+                "snippet": snippet,
+                "source": "搜狗新闻",
+                "category": "综合",
             })
+
             if len(results) >= max_results:
                 break
+
         return results
-    except Exception:
+    except Exception as e:
+        print(f"Sogou news fetch error: {e}")
         return []
 
 
 def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10, exact_match: bool = False) -> list[dict]:
     query = keyword.strip()
-    if not query:
+
+    # RSS 源映射
+    rss_source_map = {k: k for k in _RSS_FEEDS}
+
+    # API 源映射
+    api_source_map = {k: k for k in _API_FEEDS}
+
+    # 如果指定了特定 RSS 源
+    if source in rss_source_map:
+        return _fetch_rss_feed(rss_source_map[source], query, max_results)
+
+    # 如果指定了特定 API 源
+    if source in api_source_map:
+        return _fetch_api_feed(api_source_map[source], query, max_results)
+
+    # 如果指定了特定搜索源
+    if source in _SEARCH_FEEDS:
+        if source == "bing_news":
+            return _fetch_bing_news(query, max_results)
+        elif source == "sogou_news":
+            return _fetch_sogou_news(query, max_results)
         return []
 
-    # 对于特定新闻站点，先尝试直接抓取
-    if source in _NEWS_SITE_CONFIG:
-        results = _fetch_site_news(source, query, max_results)
-        if results:
-            return results
-        # 直接抓取无结果时，用 Bing 搜索该站点的内容
-        site_query = f"{query} {_search_suffix(source)}".strip()
-        results = _fetch_bing_news(site_query, max_results)
-        if results:
-            return results
+    # "all" 模式：聚合所有 RSS + API 源 + 搜索引擎
+    all_items: list[dict] = []
+    seen_titles: set[str] = set()
 
-    # 使用 Bing 新闻搜索（国内可访问）
-    search_query = query
-    suffix = _search_suffix(source)
-    if suffix:
-        search_query = f"{query} {suffix}"
-    results = _fetch_bing_news(search_query, max_results)
-    if results:
-        return results
+    # 如果有关键词，优先用搜索引擎获取精准结果（Bing + 搜狗双引擎）
+    if query:
+        bing_results = _fetch_bing_news(query, max_results)
+        for item in bing_results:
+            t = item.get("title", "")
+            if t and t not in seen_titles:
+                seen_titles.add(t)
+                all_items.append(item)
 
-    # 回退到 DuckDuckGo（国外可访问时）
-    try:
-        ddg_query = f'"{search_query}"' if exact_match else search_query
-        resp = requests.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": ddg_query},
-            headers={"User-Agent": settings.CRAWLER_USER_AGENT},
-            timeout=settings.CRAWLER_TIMEOUT,
-        )
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        seen: set[str] = set()
-        for item in soup.select(".result")[: max_results * 2]:
-            title_el = item.select_one(".result__a")
-            snippet_el = item.select_one(".result__snippet")
-            if not title_el:
-                continue
-            title = title_el.get_text(" ", strip=True)
-            url = _normalize_result_url(title_el.get("href") or "")
-            snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
-            if not title or title in seen:
-                continue
-            if _looks_like_error_page(title, snippet):
-                continue
-            if url:
-                ok, page_title, page_text, final_url = _probe_url(url)
-                if not ok:
-                    continue
-                url = final_url or url
-                if page_title and len(page_title) > 3 and title and title not in page_title:
-                    snippet = snippet or page_title
-            seen.add(title)
-            results.append({
-                "title": title,
-                "url": url,
-                "snippet": snippet,
-                "source": _ensure_source_name(source),
-            })
-            if len(results) >= max_results:
-                break
-        return results
-    except Exception:
-        return results
+        sogou_results = _fetch_sogou_news(query, max_results)
+        for item in sogou_results:
+            t = item.get("title", "")
+            if t and t not in seen_titles:
+                seen_titles.add(t)
+                all_items.append(item)
+
+    # 从所有 RSS 源获取（不限制关键词，先获取再过滤）
+    rss_results = _fetch_all_rss("", max_results * 2)
+    for item in rss_results:
+        t = item.get("title", "")
+        if t and t not in seen_titles:
+            seen_titles.add(t)
+            all_items.append(item)
+
+    # 从所有 API 源获取
+    for api_source in _API_FEEDS:
+        api_results = _fetch_api_feed(api_source, query, max_results)
+        for item in api_results:
+            t = item.get("title", "")
+            if t and t not in seen_titles:
+                seen_titles.add(t)
+                all_items.append(item)
+
+    # 如果有关键词，优先返回匹配的结果；否则交叉排列各源结果
+    if query:
+        query_lower = query.lower()
+        matched = [item for item in all_items
+                   if query_lower in item.get("title", "").lower()
+                   or query_lower in item.get("snippet", "").lower()]
+        if matched:
+            return matched[:max_results]
+
+    # 交叉排列：按来源分组，轮流从每个来源取一条，避免单一来源占满结果
+    from collections import defaultdict
+    by_source: dict[str, list[dict]] = defaultdict(list)
+    for item in all_items:
+        by_source[item.get("source", "")].append(item)
+    interleaved: list[dict] = []
+    source_iters = {k: iter(v) for k, v in by_source.items()}
+    while len(interleaved) < max_results and source_iters:
+        exhausted = []
+        for key, it in source_iters.items():
+            try:
+                interleaved.append(next(it))
+                if len(interleaved) >= max_results:
+                    break
+            except StopIteration:
+                exhausted.append(key)
+        for key in exhausted:
+            del source_iters[key]
+    return interleaved
 
 
 def _ensure_source_name(source: str) -> str:
     mapping = {
-        "tencent": "腾讯新闻",
-        "netease": "网易新闻",
-        "sina": "新浪新闻",
-        "ifeng": "凤凰网",
-        "thepaper": "澎湃新闻",
-        "sohu": "搜狐新闻",
-        "toutiao": "今日头条",
-        "weibo": "微博",
-        "government": "政府网站",
-        "social_media": "社交媒体",
+        "36kr": "36氪",
+        "ithome": "IT之家",
+        "sspai": "少数派",
+        "oschina": "开源中国",
+        "solidot": "奇客Solidot",
+        "zhihu_daily": "知乎日报",
+        "baidu_hot": "百度热搜",
+        "toutiao_hot": "今日头条",
+        "bilibili_hot": "B站热门",
     }
     return mapping.get(source, source or "全网资讯")
 
@@ -458,17 +881,394 @@ async def list_clues(
     page_size: int = 20,
     status: Optional[str] = None,
     search: Optional[str] = None,
+    search_fields: Optional[str] = None,  # title,content,keywords,source,category (逗号分隔)
+    search_mode: Optional[str] = "fuzzy",  # fuzzy(模糊), exact(精确), smart(智能)
     db: Session = Depends(get_db),
 ):
     q = db.query(Clue)
     if status:
         q = q.filter(Clue.status == status)
+
     if search:
-        like = f"%{search}%"
-        q = q.filter(Clue.title.ilike(like) | Clue.content.ilike(like))
+        keywords = [k.strip() for k in search.split(",") if k.strip()]
+        if keywords:
+            mode = (search_mode or "fuzzy").lower()
+            fields = [f.strip() for f in (search_fields or "").split(",") if f.strip()] if search_fields else []
+
+            try:
+                if mode == "exact":
+                    for kw in keywords:
+                        conditions = []
+                        if not fields or "title" in fields:
+                            conditions.append(Clue.title == kw)
+                        if not fields or "content" in fields:
+                            conditions.append(Clue.content == kw)
+                        if not fields or "keywords" in fields:
+                            conditions.append(Clue.keywords.like(f"%{kw}%"))
+                        if not fields or "source" in fields:
+                            conditions.append(Clue.source == kw)
+                        if not fields or "category" in fields:
+                            conditions.append(Clue.category == kw)
+                        if conditions:
+                            q = q.filter(or_(*conditions))
+                elif mode == "smart":
+                    from sqlalchemy import case, literal_column
+                    score_cases = []
+                    for kw in keywords:
+                        like_kw = f"%{kw}%"
+                        if not fields or "title" in fields:
+                            score_cases.append((Clue.title.ilike(like_kw), 10))
+                            score_cases.append((Clue.title == kw, 50))
+                        if not fields or "content" in fields:
+                            score_cases.append((Clue.content.ilike(like_kw), 5))
+                            score_cases.append((Clue.content == kw, 25))
+                        if not fields or "keywords" in fields:
+                            score_cases.append((Clue.keywords.ilike(like_kw), 8))
+                        if not fields or "source" in fields:
+                            score_cases.append((Clue.source.ilike(like_kw), 3))
+                        if not fields or "category" in fields:
+                            score_cases.append((Clue.category.ilike(like_kw), 2))
+
+                    if score_cases:
+                        try:
+                            score_expr = case(*score_cases, else_=0).label("relevance_score")
+                            conditions = [c[0] for c in score_cases]
+                            q = q.filter(or_(*conditions))
+                            q = q.order_by(desc(score_expr))
+                        except Exception as search_error:
+                            import logging
+                            logging.getLogger(__name__).warning(f"智能搜索降级为模糊搜索: {str(search_error)[:100]}")
+                            # 降级到模糊搜索
+                            for kw in keywords:
+                                like_kw = f"%{kw}%"
+                                conditions = []
+                                if not fields or "title" in fields:
+                                    conditions.append(Clue.title.ilike(like_kw))
+                                if not fields or "content" in fields:
+                                    conditions.append(Clue.content.ilike(like_kw))
+                                if not fields or "keywords" in fields:
+                                    conditions.append(Clue.keywords.ilike(like_kw))
+                                if not fields or "source" in fields:
+                                    conditions.append(Clue.source.ilike(like_kw))
+                                if not fields or "category" in fields:
+                                    conditions.append(Clue.category.ilike(like_kw))
+                                if conditions:
+                                    q = q.filter(or_(*conditions))
+                else:
+                    for kw in keywords:
+                        like_kw = f"%{kw}%"
+                        conditions = []
+                        if not fields or "title" in fields:
+                            conditions.append(Clue.title.ilike(like_kw))
+                        if not fields or "content" in fields:
+                            conditions.append(Clue.content.ilike(like_kw))
+                        if not fields or "keywords" in fields:
+                            conditions.append(Clue.keywords.ilike(like_kw))
+                        if not fields or "source" in fields:
+                            conditions.append(Clue.source.ilike(like_kw))
+                        if not fields or "category" in fields:
+                            conditions.append(Clue.category.ilike(like_kw))
+                        if conditions:
+                            q = q.filter(or_(*conditions))
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"搜索功能异常，使用基础搜索: {str(e)[:200]}")
+                # 最终降级：只做简单的标题和内容模糊搜索
+                like = f"%{keywords[0]}%"
+                q = q.filter(Clue.title.ilike(like) | Clue.content.ilike(like))
+
     total = q.count()
     items = q.order_by(desc(Clue.created_at)).offset((page - 1) * page_size).limit(page_size).all()
     return {"code": 200, "data": [_serialize_clue(item) for item in items], "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/collect")
+@router.post("/collect")
+async def collect_clue(
+    url: str = "",
+    time_range: Optional[str] = None,
+    max_results: int = 10,
+    db: Session = Depends(get_db),
+):
+    cleaned_url = url.strip()
+    if cleaned_url:
+        ok, _, _, final_url = _probe_url(cleaned_url)
+        if not ok:
+            raise HTTPException(status_code=400, detail="来源页面无法访问或疑似错误页")
+        cleaned_url = final_url or cleaned_url
+    title = url.strip() or "定向采集线索"
+    clue = Clue(
+        title=title,
+        content=f"采集来源：{cleaned_url}" if cleaned_url else "通过定向采集创建",
+        source="direct",
+        source_url=cleaned_url or None,
+        status="pending",
+        news_value_score=60,
+        propagation_potential=55,
+    )
+    db.add(clue)
+    db.commit()
+    db.refresh(clue)
+    return {"code": 200, "message": "采集任务已提交", "data": {"created": 1, "items": [_serialize_clue(clue)]}}
+
+
+@router.get("/sources")
+async def list_sources():
+    """返回所有可用信源列表（RSS + API），供前端动态渲染信源选择器"""
+    sources: list[dict] = []
+
+    for key, config in _RSS_FEEDS.items():
+        sources.append({
+            "key": key,
+            "name": config["name"],
+            "type": "rss",
+            "category": config["category"],
+            "url": config["url"],
+            "status": "active",
+        })
+
+    for key, config in _API_FEEDS.items():
+        sources.append({
+            "key": key,
+            "name": config["name"],
+            "type": "api",
+            "category": config["category"],
+            "url": config["url"],
+            "status": "active",
+        })
+
+    for key, config in _SEARCH_FEEDS.items():
+        sources.append({
+            "key": key,
+            "name": config["name"],
+            "type": "search",
+            "category": config["category"],
+            "url": "",
+            "status": "active",
+        })
+
+    return {
+        "code": 200,
+        "data": {
+            "rss": [s for s in sources if s["type"] == "rss"],
+            "api": [s for s in sources if s["type"] == "api"],
+            "search": [s for s in sources if s["type"] == "search"],
+            "all": sources,
+        },
+    }
+
+
+@router.post("/sources/verify")
+async def verify_source(body: dict):
+    """验证单个信源是否可访问。请求体: {"url": "...", "type": "rss|api", "key": "..."}"""
+    url = (body.get("url") or "").strip()
+    source_type = body.get("type", "rss")
+
+    if not url:
+        raise HTTPException(status_code=400, detail="url 不能为空")
+
+    try:
+        start = time.time()
+        resp = requests.get(
+            url,
+            headers={"User-Agent": settings.CRAWLER_USER_AGENT},
+            timeout=8,
+            allow_redirects=True,
+        )
+        elapsed = round((time.time() - start) * 1000)
+
+        if resp.status_code >= 400:
+            return {
+                "code": 200,
+                "data": {
+                    "accessible": False,
+                    "status_code": resp.status_code,
+                    "elapsed_ms": elapsed,
+                    "reason": f"HTTP {resp.status_code}",
+                    "url": url,
+                },
+            }
+
+        # 验证内容格式
+        content_type = resp.headers.get("content-type", "")
+        is_valid = False
+
+        if source_type == "rss":
+            is_valid = "xml" in content_type or "rss" in content_type or (
+                resp.text.strip().startswith("<") and ("<rss" in resp.text or "<feed" in resp.text)
+            )
+        elif source_type == "api":
+            try:
+                resp.json()
+                is_valid = True
+            except Exception:
+                is_valid = False
+        else:
+            is_valid = True
+
+        return {
+            "code": 200,
+            "data": {
+                "accessible": True,
+                "status_code": resp.status_code,
+                "elapsed_ms": elapsed,
+                "content_type": content_type,
+                "format_valid": is_valid,
+                "item_count": _count_rss_items(resp.text) if source_type == "rss" else None,
+                "url": url,
+            },
+        }
+    except requests.ConnectionError:
+        return {"code": 200, "data": {"accessible": False, "reason": "连接失败，源不可达", "url": url}}
+    except requests.Timeout:
+        return {"code": 200, "data": {"accessible": False, "reason": "请求超时", "url": url}}
+    except Exception as e:
+        return {"code": 200, "data": {"accessible": False, "reason": str(e), "url": url}}
+
+
+def _count_rss_items(xml_text: str) -> int:
+    """简单统计 RSS/Atom feed 中的条目数"""
+    import re
+    items = len(re.findall(r"<item[>\s]", xml_text))
+    if items == 0:
+        items = len(re.findall(r"<entry[>\s]", xml_text))
+    return items
+
+
+@router.get("/collect/multichannel")
+@router.post("/collect/multichannel")
+async def collect_multichannel(
+    keywords: str = "",
+    channels: str = "",
+    max_results: int = 10,
+    db: Session = Depends(get_db),
+):
+    import logging
+    logger = logging.getLogger(__name__)
+
+    keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    channel_list = [c.strip() for c in channels.split(",") if c.strip()]
+    if not keyword_list:
+        raise HTTPException(status_code=400, detail="关键词不能为空")
+
+    logger.info(f"🔍 开始多渠道采集 | 关键词: {keyword_list} | 渠道: {channel_list or ['all']} | 上限: {max_results}")
+
+    items: list[dict] = []
+    seen_keys: set[str] = set()
+    fetch_errors: list[str] = []
+    successful_sources: list[str] = []
+
+    # 顺序抓取各渠道（避免并发过高被封）
+    import random
+    tasks = [(k, c) for k in keyword_list for c in (channel_list or ["all"])]
+    try:
+        for idx, (kw, src) in enumerate(tasks):
+            # 请求间隔 1-3 秒，避免被封
+            if idx > 0:
+                time.sleep(random.uniform(1.0, 3.0))
+            try:
+                results = _fetch_web_results(kw, src, max_results)
+                if results:
+                    for item in results:
+                        key = (item.get("title"), item.get("url"))
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            items.append(item)
+                    successful_sources.append(f"{src}({len(results)}条)")
+                    logger.info(f"✅ {src} 成功采集 {len(results)} 条 (关键词: {kw})")
+                else:
+                    fetch_errors.append(f"{src}: 无结果")
+                    logger.warning(f"⚠️ {src} 未找到相关内容 (关键词: {kw})")
+            except Exception as e:
+                error_msg = str(e)[:100]
+                fetch_errors.append(f"{src}: {error_msg}")
+                logger.error(f"❌ {src} 采集失败: {error_msg} (关键词: {kw})")
+    except Exception as pool_error:
+        logger.error(f"❌ 采集执行异常: {str(pool_error)[:200]}")
+        fetch_errors.append(f"采集错误: {str(pool_error)[:50]}")
+
+    created = []
+    seen = set()
+    try:
+        for item in items[:max_results]:
+            key = (item.get("title"), item.get("url"))
+            if key in seen:
+                continue
+            seen.add(key)
+            title = str(item.get("title") or "").strip()
+            snippet = str(item.get("snippet") or "").strip()
+            source = _ensure_source_name(str(item.get("source") or "all"))
+            category = str(item.get("category") or "")
+            source_url = str(item.get("url") or "").strip() or None
+            news_score, prop_score = _score_clue(title, snippet)
+            clue = Clue(
+                title=title,
+                content=snippet or title,
+                source=source,
+                source_url=source_url,
+                keywords=json.dumps(keyword_list, ensure_ascii=False),
+                status="pending",
+                news_value_score=news_score,
+                propagation_potential=prop_score,
+                processed_at=datetime.now(timezone(timedelta(hours=8))),
+            )
+            if category:
+                clue.category = category
+            db.add(clue)
+            created.append(clue)
+
+        db.commit()
+        for clue in created:
+            db.refresh(clue)
+    except Exception as db_error:
+        logger.error(f"❌ 数据库操作失败: {str(db_error)[:200]}")
+        db.rollback()
+        created = []  # 清空已创建的列表，避免返回不一致的数据
+
+    # 构建详细的响应信息
+    total_fetched = len(items)
+    total_created = len(created)
+
+    if total_created > 0:
+        message = f"✅ 成功采集 {total_created} 条线索"
+        if successful_sources:
+            message += f"（来源: {'、'.join(successful_sources[:3])}）"
+        logger.info(f"🎉 采集完成！共获取 {total_fetched} 条，创建 {total_created} 条线索")
+        status_code = 200
+    elif total_fetched > 0:
+        message = "⚠️ 采集到内容但均为重复线索"
+        status_code = 200
+        logger.warning(f"⚠️ 采集到 {total_fetched} 条但全部重复")
+    else:
+        error_details = []
+        if fetch_errors:
+            error_details.append(f"失败原因: {'; '.join(fetch_errors[:3])}")
+        error_details.append("建议: 尝试其他渠道（如 IT之家、36氪）或更换关键词")
+
+        message = f"❌ 未采集到有效线索。{' '.join(error_details)}"
+        status_code = 202  # 使用 202 表示接受但无内容（非真正错误）
+        logger.warning(f"😢 采集失败！未获取到任何有效内容")
+
+    return {
+        "code": status_code,
+        "message": message,
+        "data": {
+            "created": total_created,
+            "fetched": total_fetched,
+            "items": [_serialize_clue(item) for item in created],
+            "sources": successful_sources,
+            "errors": fetch_errors[:5],  # 返回前5个错误供前端展示
+            "keywords": keyword_list,
+            "channels": channel_list,
+        },
+    }
+
+
+@router.post("/batch-delete")
+async def batch_delete_clue(ids: List[int], db: Session = Depends(get_db)):
+    db.query(Clue).filter(Clue.id.in_(ids)).delete(synchronize_session=False)
+    db.commit()
+    return {"code": 200, "message": f"已删除 {len(ids)} 条"}
 
 
 @router.get("/{clue_id}")
@@ -519,103 +1319,6 @@ async def delete_clue(clue_id: int, db: Session = Depends(get_db)):
     db.delete(clue)
     db.commit()
     return {"code": 200, "message": "删除成功"}
-
-
-@router.post("/batch-delete")
-async def batch_delete_clue(ids: List[int], db: Session = Depends(get_db)):
-    db.query(Clue).filter(Clue.id.in_(ids)).delete(synchronize_session=False)
-    db.commit()
-    return {"code": 200, "message": f"已删除 {len(ids)} 条"}
-
-
-@router.post("/collect")
-async def collect_clue(
-    url: str = "",
-    time_range: Optional[str] = None,
-    max_results: int = 10,
-    db: Session = Depends(get_db),
-):
-    cleaned_url = url.strip()
-    if cleaned_url:
-        ok, _, _, final_url = _probe_url(cleaned_url)
-        if not ok:
-            raise HTTPException(status_code=400, detail="来源页面无法访问或疑似错误页")
-        cleaned_url = final_url or cleaned_url
-    title = url.strip() or "定向采集线索"
-    clue = Clue(
-        title=title,
-        content=f"采集来源：{cleaned_url}" if cleaned_url else "通过定向采集创建",
-        source="direct",
-        source_url=cleaned_url or None,
-        status="pending",
-        news_value_score=60,
-        propagation_potential=55,
-    )
-    db.add(clue)
-    db.commit()
-    db.refresh(clue)
-    return {"code": 200, "message": "采集任务已提交", "data": {"created": 1, "items": [_serialize_clue(clue)]}}
-
-
-@router.post("/collect/multichannel")
-async def collect_multichannel(
-    keywords: str = "",
-    channels: str = "",
-    max_results: int = 10,
-    db: Session = Depends(get_db),
-):
-    keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
-    channel_list = [c.strip() for c in channels.split(",") if c.strip()]
-    if not keyword_list:
-        raise HTTPException(status_code=400, detail="关键词不能为空")
-
-    items: list[dict] = []
-    for keyword in keyword_list:
-        for channel in channel_list or ["all"]:
-            results = _fetch_web_results(keyword, channel, max_results=max_results)
-            if results:
-                items.extend(results)
-        if not items:
-            items.extend(_local_search_results(db, keyword, max_results=max_results))
-
-    created = []
-    seen = set()
-    for item in items[:max_results]:
-        key = (item.get("title"), item.get("url"))
-        if key in seen:
-            continue
-        seen.add(key)
-        title = str(item.get("title") or "").strip()
-        snippet = str(item.get("snippet") or "").strip()
-        source = _ensure_source_name(str(item.get("source") or "all"))
-        source_url = str(item.get("url") or "").strip() or None
-        news_score, prop_score = _score_clue(title, snippet)
-        clue = Clue(
-            title=title,
-            content=snippet or title,
-            source=source,
-            source_url=source_url,
-            keywords=json.dumps(keyword_list, ensure_ascii=False),
-            status="pending",
-            news_value_score=news_score,
-            propagation_potential=prop_score,
-            processed_at=datetime.now(timezone.utc),
-        )
-        db.add(clue)
-        created.append(clue)
-
-    db.commit()
-    for clue in created:
-        db.refresh(clue)
-    message = "多渠道采集已提交" if created else "未抓取到可验证来源"
-    return {
-        "code": 200,
-        "message": message,
-        "data": {
-            "created": len(created),
-            "items": [_serialize_clue(item) for item in created],
-        },
-    }
 
 
 @router.post("/{clue_id}/analyze")

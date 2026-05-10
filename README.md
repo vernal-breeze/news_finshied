@@ -1,6 +1,6 @@
 # 基于大模型的新闻内容采编系统
 
-> 版本：v1.0 | 技术栈：FastAPI + React 18 + TypeScript + SQLite + OpenAI API
+> 版本：v1.0 | 技术栈：FastAPI + React 18 + TypeScript + MySQL 8.0 + OpenAI API
 
 一个面向新闻机构的**全流程智能采编平台**，集成大模型能力，将新闻生产从线索发现到内容发布的全链路数字化、智能化。
 
@@ -9,23 +9,29 @@
 ## 项目结构
 
 ```
-news_editor/
+news_finshied/
 ├── backend/                    # FastAPI 后端
 │   ├── app/
 │   │   ├── main.py            # 主应用入口，路由注册
-│   │   ├── models.py          # SQLAlchemy 数据模型
-│   │   ├── database.py        # 数据库连接
-│   │   ├── clue_collector.py  # 新闻线索采集器（含 news-aggregator-skill 集成）
-│   │   ├── ai_service.py      # AI 服务层
+│   │   ├── database.py        # 数据库连接（SQLite/MySQL 双模式）
+│   │   ├── core/
+│   │   │   └── config.py      # 应用配置（pydantic-settings）
+│   │   ├── models/            # SQLAlchemy 数据模型
+│   │   │   ├── user.py        # 用户模型
+│   │   │   ├── article.py     # 文章模型
+│   │   │   ├── clue.py        # 线索模型
+│   │   │   ├── topic.py       # 选题模型
+│   │   │   ├── review.py      # 审核模型
+│   │   │   ├── feedback.py    # 反馈模型
+│   │   │   ├── message.py     # 消息模型
+│   │   │   └── collection.py  # 采集任务模型
 │   │   ├── services/          # 业务逻辑层
-│   │   ├── repositories/      # 数据访问层
 │   │   ├── routers/           # API 路由
 │   │   └── schemas/           # Pydantic 请求/响应模型
-│   ├── data/                  # SQLite 数据库
-│   │   └── news_editor.db     # 数据库文件（首次运行自动创建）
-│   ├── requirements.txt
-│   ├── run_backend.sh         # 后端启动脚本
-│   └── seed_data.py           # 数据初始化
+│   ├── init.sql               # MySQL 初始化脚本（建表+默认数据）
+│   ├── requirements.txt       # Python 依赖（含 pymysql）
+│   ├── Dockerfile             # 后端容器镜像
+│   └── .env.example           # 环境变量模板
 ├── frontend/                  # React + TypeScript 前端
 │   ├── src/
 │   │   ├── pages/             # 页面组件
@@ -36,77 +42,97 @@ news_editor/
 │   │   │   ├── AIArticle.tsx  # AI 辅助写作
 │   │   │   ├── Analytics.tsx  # 数据统计
 │   │   │   ├── review/        # 审核端页面
-│   │   │   │   ├── Login.tsx  # 审核端登录
-│   │   │   │   ├── Dashboard.tsx
-│   │   │   │   ├── Queue.tsx  # 审核队列
-│   │   │   │   ├── Published.tsx
-│   │   │   │   └── Settings.tsx
 │   │   │   └── reader/        # 读者端页面（公开）
-│   │   │       ├── Home.tsx
-│   │   │       ├── Category.tsx
-│   │   │       ├── Search.tsx
-│   │   │       ├── ArticleDetail.tsx
-│   │   │       └── Messages.tsx
 │   │   └── utils/             # 工具函数
+│   ├── nginx.conf             # Nginx 配置（SPA 路由 + API 代理）
+│   ├── Dockerfile             # 前端容器镜像（构建+Nginx）
 │   └── package.json
-├── skills/                    # OpenClaw Agent Skills
-│   └── news-aggregator-skill/ # 新闻聚合技能（28+ 信源）
-│       ├── scripts/           # 采集脚本
-│       │   ├── fetch_news.py  # HackerNews/GitHub/HuggingFace 等
-│       │   ├── daily_briefing.py
-│       │   └── ...
-│       └── instructions/      # 早报模板
 ├── docs/                      # 开发文档
-│   ├── API_KEY_SETUP.md
-│   └── AI_ARTICLE_GUIDE.md
-└── docker-compose.yml         # Docker 部署
+│   ├── MySQL_Migration_Architecture.md  # MySQL 迁移架构设计
+│   └── MySQL_接入操作提示词.md           # MySQL 接入操作指南
+├── docker-compose.yml         # Docker Compose 编排（MySQL + Backend + Frontend）
+├── docker.sh                  # Docker 一键操作脚本
+└── .env.example               # 根目录环境变量模板
 ```
 
 ---
 
 ## 快速启动
 
-### 方式一：一键启动（推荐）
+### 方式一：Docker Compose 一键部署（推荐）
 
 ```bash
-# macOS / Linux
-chmod +x start.sh
-./start.sh
+# 1. 克隆项目后，进入目录
+cd news_finshied
 
-# Windows
-start.bat
+# 2. 一键启动（自动创建 .env、拉取镜像、构建、启动）
+chmod +x docker.sh
+./docker.sh start
+
+# 3. 等待服务 healthy（约 30-60 秒）
+./docker.sh status
 ```
 
-### 方式二：手动启动
+启动后访问：
+- 前端：http://localhost:3000
+- 后端 API：http://localhost:8000
+- Swagger 文档：http://localhost:8000/docs
+- MySQL：localhost:3306
 
-**后端：**
+### 方式二：手动分别启动
+
+**前置条件：** 需要本地安装 MySQL 8.0 或使用 Docker 单独启动 MySQL。
 
 ```bash
+# 1. 启动 MySQL（Docker 方式）
+docker run -d \
+  --name news_editor_mysql \
+  -e MYSQL_ROOT_PASSWORD=rootpass123 \
+  -e MYSQL_DATABASE=news_editor \
+  -e MYSQL_USER=news_editor \
+  -e MYSQL_PASSWORD=apppass123 \
+  -p 3306:3306 \
+  mysql:8.0 \
+  --character-set-server=utf8mb4 \
+  --collation-server=utf8mb4_unicode_ci
+
+# 2. 等待 MySQL 就绪（约 30 秒），然后初始化表结构
+docker exec -i news_editor_mysql mysql -u root -prootpass123 < backend/init.sql
+
+# 3. 安装后端依赖并启动
 cd backend
 pip3 install -r requirements.txt
-python -m uvicorn app.main:app --reload --port 8000
-```
+python3 -m uvicorn app.main:app --reload --port 8000
 
-**前端：**
-
-```bash
+# 4. 安装前端依赖并启动（新终端）
 cd frontend
 npm install
 npm run dev
 ```
 
-访问：http://localhost:3000
+### 常用 Docker 操作
+
+```bash
+./docker.sh start      # 启动全部服务
+./docker.sh stop       # 停止全部服务
+./docker.sh status     # 查看服务状态
+./docker.sh logs       # 查看后端日志
+./docker.sh logs mysql # 查看 MySQL 日志
+./docker.sh mysql      # 进入 MySQL 命令行
+./docker.sh backup     # 备份数据库
+./docker.sh rebuild    # 重新构建并启动
+./docker.sh clean      # 清除所有容器和数据（⚠️ 危险）
+```
 
 ---
 
 ## 默认账号
 
-| 端 | 用户名 | 密码 | 角色 |
-|---|---|---|---|
-| 采编端 | `user` | `user123` | 投稿用户 |
-| 审核端 | `reviewer` | `reviewer123` | 审核员 |
+| 用户名 | 密码 | 角色 |
+|--------|------|------|
+| `admin` | `admin123` | 系统管理员 |
 
-> 读者端无需登录，直接访问 http://localhost:3000/reader
+> 首次使用请通过注册接口创建新用户，或使用 init.sql 中的默认管理员账号登录。
 
 ---
 
@@ -131,33 +157,94 @@ npm run dev
 - **公开访问**：已发布稿件浏览、分类筛选、全文搜索
 - **互动**：评论、点赞、分享
 
-### 早报生成（通过 news-aggregator-skill）
-
-```python
-from app.clue_collector import ClueCollector
-
-c = ClueCollector()
-
-# 5 种早报模板
-c.collect_daily_briefing(profile='general')   # 综合早报
-c.collect_daily_briefing(profile='finance')   # 财经早报
-c.collect_daily_briefing(profile='tech')      # 科技早报
-c.collect_daily_briefing(profile='ai_daily')   # AI 日报
-c.collect_daily_briefing(profile='social')     # 社交早报
-```
-
 ---
 
 ## 技术架构
 
 | 层次 | 技术 |
-|---|---|
-| 前端 | React 18 + TypeScript + Vite |
-| 后端 | FastAPI + SQLAlchemy + Pydantic |
-| 数据库 | SQLite（开发）/ PostgreSQL（生产） |
+|------|------|
+| 前端 | React 18 + TypeScript + Vite + Ant Design |
+| 后端 | FastAPI + SQLAlchemy 2.0 + Pydantic v2 |
+| 数据库 | MySQL 8.0（生产）/ SQLite（本地快速开发） |
+| 驱动 | PyMySQL（纯 Python，无需编译 C 扩展） |
 | AI 服务 | SiliconFlow API（DeepSeek-V3） |
 | 认证 | JWT（python-jose + passlib） |
-| 新闻采集 | news-aggregator-skill（28+ 结构化信源） |
+| 部署 | Docker Compose（MySQL + Backend + Frontend） |
+
+---
+
+## 数据库
+
+### MySQL 表结构
+
+系统共 8 张核心表：
+
+| 表名 | 说明 | 主要外键 |
+|------|------|----------|
+| `users` | 用户表 | - |
+| `clues` | 线索表 | - |
+| `topics` | 选题表 | editor_id → users |
+| `articles` | 文章表 | author_id → users, topic_id → topics, clue_id → clues |
+| `reviews` | 审核记录表 | article_id → articles, reviewer_id → users |
+| `feedbacks` | 反馈统计表 | article_id → articles |
+| `messages` | 站内消息表 | - |
+| `collections` | 采集任务表 | - |
+
+### 切换 SQLite ↔ MySQL
+
+编辑 `backend/.env` 中的 `DATABASE_URL`：
+
+```bash
+# SQLite（本地快速开发，无需数据库服务）
+DATABASE_URL=sqlite:///./data/news_editor.db
+
+# MySQL（Docker Compose 或本地 MySQL）
+DATABASE_URL=mysql+pymysql://news_editor:apppass123@localhost:3306/news_editor?charset=utf8mb4
+```
+
+Docker Compose 环境下由 `docker-compose.yml` 自动注入 MySQL 连接串，无需手动配置。
+
+### 详细文档
+
+- [MySQL 迁移架构设计](docs/MySQL_Migration_Architecture.md) — 表结构、索引、迁移方案、性能优化
+- [MySQL 接入操作指南](docs/MySQL_接入操作提示词.md) — 从零开始的 MySQL 接入步骤
+
+---
+
+## 环境变量
+
+### 根目录 .env（Docker Compose 使用）
+
+```bash
+# MySQL 配置
+MYSQL_ROOT_PASSWORD=rootpass123
+MYSQL_DATABASE=news_editor
+MYSQL_USER=news_editor
+MYSQL_PASSWORD=apppass123
+MYSQL_PORT=3306
+
+# 后端配置
+DEBUG=true
+ENVIRONMENT=development
+SECRET_KEY=your-secret-key
+
+# AI API
+SILICONFLOW_API_KEY=your-api-key
+AI_MODEL=deepseek-ai/DeepSeek-V3
+
+# 端口
+BACKEND_PORT=8000
+FRONTEND_PORT=3000
+```
+
+### 后端 .env（本地开发使用）
+
+```bash
+DATABASE_URL=mysql+pymysql://news_editor:apppass123@localhost:3306/news_editor?charset=utf8mb4
+SECRET_KEY=your-secret-key
+SILICONFLOW_API_KEY=your-api-key
+AI_MODEL=deepseek-ai/DeepSeek-V3
+```
 
 ---
 
@@ -171,42 +258,62 @@ c.collect_daily_briefing(profile='social')     # 社交早报
 主要接口前缀：
 
 | 模块 | 前缀 |
-|---|---|
-| 线索 | `POST/GET /api/clues` |
-| 稿件 | `POST/GET /api/articles` |
-| 内容生成 | `/api/content/generate` |
-| 审核 | `/api/reviews` |
-| 读者端 | `/api/public/articles` |
+|------|------|
+| 认证 | `POST /api/auth/login`, `POST /api/auth/register` |
+| 线索 | `GET/POST /api/clues` |
+| 选题 | `GET/POST /api/topics` |
+| 稿件 | `GET/POST /api/articles` |
+| 内容生成 | `POST /api/content/generate` |
+| 审核 | `GET/POST /api/reviews` |
+| 反馈 | `GET/POST /api/feedback` |
+| 消息 | `GET /api/messages` |
+| 采集 | `GET/POST /api/collections` |
+| 统计 | `GET /api/stats` |
+| 读者端 | `GET /api/public/articles` |
+| 健康检查 | `GET /health` |
 
 ---
 
-## 新闻信源（news-aggregator-skill）
+## M1/M2 Mac 注意事项
 
-| 信源 | 说明 |
-|---|---|
-| Hacker News | Algolia API，含关键词搜索 |
-| GitHub Trending | 结构化 API |
-| 华尔街见闻 | 财经新闻 |
-| 微博热搜 | 实时热搜 |
-| V2EX | 技术社区 |
-| HuggingFace Papers | AI 学术论文 |
-| AI Newsletters | AI 资讯聚合 |
+- `docker-compose.yml` 已设置 `platform: linux/arm64/v8`，兼容 Apple Silicon
+- PyMySQL 是纯 Python 驱动，无需编译 C 扩展
+- MySQL 8.0 官方镜像已原生支持 ARM64
+- 如遇镜像拉取慢，可配置 Docker 镜像加速器
 
 ---
 
-## 数据库
+## 常见问题
 
-数据库文件：`backend/data/news_editor.db`
+### Q: MySQL 连接失败？
+```bash
+# 检查 MySQL 是否启动
+docker compose ps
 
-首次启动自动创建表结构和默认用户。
+# 检查 MySQL 日志
+docker compose logs mysql
 
----
-
-## 环境变量（backend/.env）
-
-```env
-DATABASE_URL=sqlite:///./data/news_editor.db
-SECRET_KEY=your-secret-key-here
-SILICONFLOW_API_KEY=your-api-key-here
-AI_MODEL=deepseek-ai/DeepSeek-V3
+# 手动测试连接
+docker compose exec mysql mysql -u news_editor -papppass123 -e "SELECT 1" news_editor
 ```
+
+### Q: 表不存在？
+```bash
+# 手动执行初始化脚本
+docker compose exec -T mysql mysql -u root -prootpass123 < backend/init.sql
+```
+
+### Q: 如何重置数据库？
+```bash
+# 停止服务并删除数据卷
+docker compose down -v
+# 重新启动
+docker compose up -d
+```
+
+### Q: 如何切换回 SQLite？
+编辑 `backend/.env`，将 DATABASE_URL 改为：
+```
+DATABASE_URL=sqlite:///./data/news_editor.db
+```
+重启后端即可。

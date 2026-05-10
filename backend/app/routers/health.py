@@ -142,3 +142,24 @@ async def readiness_check(db: Session = Depends(get_db)):
 async def liveness_check():
     """Kubernetes 存活探针 - 确认进程存活"""
     return BaseResponse(code=200, message="存活")
+
+
+@router.get("/status", response_model=DataResponse[dict], summary="系统状态")
+async def system_status(db: Session = Depends(get_db)):
+    """获取系统运行状态摘要"""
+    from app.models import Article, NewsClue
+    from datetime import datetime
+
+    article_count = db.query(Article).count()
+    clue_count = db.query(NewsClue).count()
+
+    return create_data_response(
+        data={
+            "status": "running",
+            "name": settings.APP_NAME,
+            "environment": settings.ENVIRONMENT,
+            "articles": article_count,
+            "clues": clue_count,
+            "timestamp": datetime.now().isoformat(),
+        }
+    )

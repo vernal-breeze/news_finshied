@@ -80,6 +80,25 @@ const CompactScore = ({ score }: { score: number }) => {
   )
 }
 
+// 高亮搜索关键词
+const HighlightText = ({ text, keywords }: { text: string; keywords: string[] }) => {
+  if (!keywords.length || !text) return <span>{text}</span>
+
+  const parts = text.split(new RegExp(`(${keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi'))
+
+  return (
+    <span>
+      {parts.map((part, i) =>
+        keywords.some(kw => part.toLowerCase() === kw.toLowerCase()) ? (
+          <mark key={i} style={{ backgroundColor: '#ffe58f', padding: '0 2px', borderRadius: 2 }}>{part}</mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </span>
+  )
+}
+
 const Clues = () => {
   const [clues, setClues] = useState<NewsClue[]>([])
   const [total, setTotal] = useState(0)
@@ -94,6 +113,8 @@ const Clues = () => {
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined)
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>(undefined)
   const [dateRange, setDateRange] = useState<[string | null, string | null]>([null, null])
+  const [searchFields, setSearchFields] = useState<string[]>([])
+  const [searchMode, setSearchMode] = useState<'fuzzy' | 'exact' | 'smart'>('fuzzy')
   const [analyzing, setAnalyzing] = useState<number | null>(null)
   const [collectModalVisible, setCollectModalVisible] = useState(false)
   const [collectForm] = Form.useForm()
@@ -112,6 +133,7 @@ const Clues = () => {
   const [batchDeleteLoading, setBatchDeleteLoading] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(15)
+  const [sources, setSources] = useState<{ rss: any[]; api: any[]; search: any[] }>({ rss: [], api: [], search: [] })
 
   const fetchClues = useCallback(async () => {
     setLoading(true)
@@ -123,6 +145,8 @@ const Clues = () => {
       if (statusFilter) params.status = statusFilter
       if (categoryFilter) params.category = categoryFilter
       if (searchText) params.search = searchText
+      if (searchFields.length > 0) params.search_fields = searchFields.join(',')
+      if (searchMode && searchMode !== 'fuzzy') params.search_mode = searchMode
       if (dateRange[0] && dateRange[1]) {
         params.start_date = dateRange[0]
         params.end_date = dateRange[1]
@@ -137,21 +161,35 @@ const Clues = () => {
       setLoading(false)
       setInitialLoading(false)
     }
-  }, [statusFilter, categoryFilter, searchText, dateRange, currentPage, pageSize])
+  }, [statusFilter, categoryFilter, searchText, dateRange, currentPage, pageSize, searchFields, searchMode])
 
   useEffect(() => {
     fetchClues()
   }, [fetchClues])
+
+  // 加载可用信源列表
+  useEffect(() => {
+    clueAPI.getSources().then((res: any) => {
+      const data = res?.data || res
+      setSources({
+        rss: data?.rss || [],
+        api: data?.api || [],
+        search: data?.search || [],
+      })
+    }).catch(() => {})
+  }, [])
 
   const resetFilters = () => {
     setSearchText('')
     setStatusFilter(undefined)
     setCategoryFilter(undefined)
     setDateRange([null, null])
+    setSearchFields([])
+    setSearchMode('fuzzy')
     toast.info('筛选条件已重置')
   }
 
-  const hasActiveFilters = searchText || statusFilter || categoryFilter || dateRange[0]
+  const hasActiveFilters = searchText || statusFilter || categoryFilter || dateRange[0] || searchFields.length > 0 || searchMode !== 'fuzzy'
 
   const handleSearch = () => fetchClues()
 
@@ -277,17 +315,54 @@ const Clues = () => {
     setCollecting(true)
     try {
       const maxN = Number(values.maxResults)
-      await clueAPI.collectMultichannel(
+      const result: any = await clueAPI.collectMultichannel(
         String(values.keywords || '').trim(),
         Array.isArray(values.channels) ? values.channels : [],
         values.timeRange,
         Number.isFinite(maxN) && maxN > 0 ? maxN : 15
       )
-      await fetchClues()
-      toast.success('采集完成，列表已刷新')
-      setCollectModalVisible(false)
-      collectForm.resetFields()
+
+      // 解析响应数据
+      const data = result?.data || result
+      const created = data?.created || 0
+      const fetched = data?.fetched || 0
+      const message = result?.message || ''
+      const errors = data?.errors || []
+      const sources = data?.sources || []
+
+      if (created > 0) {
+        await fetchClues()
+        toast.success(message || `✅ 成功采集 ${created} 条线索`)
+        setCollectModalVisible(false)
+        collectForm.resetFields()
+
+        // 如果有部分失败，显示警告
+        if (errors.length > 0) {
+          setTimeout(() => {
+            toast.warning(`⚠️ 部分渠道失败: ${errors.slice(0, 2).join('; ')}`, 5000)
+          }, 1000)
+        }
+      } else if (fetched > 0) {
+        toast.warning('⚠️ 采集到内容但均为重复线索')
+        await fetchClues()
+      } else {
+        if (result?.code === 202 || errors.length > 0) {
+          toast.error(message || '❌ 未采集到有效线索', 6000)
+
+          // 显示详细的错误信息
+          if (errors.length > 0) {
+            console.error('📋 采集错误详情:', errors)
+            setTimeout(() => {
+              toast.info('💡 建议：尝试 IT之家、36氪 等稳定渠道', 8000)
+            }, 1500)
+          }
+        } else {
+          toast.warning(message || '未获取到新线索，可能已存在或网络问题')
+        }
+        await fetchClues()  // 刷新列表以显示现有数据
+      }
     } catch (error: unknown) {
+      console.error('❌ 采集请求失败:', error)
       const ax = error as { response?: { data?: { detail?: string; message?: string } } }
       const d = ax.response?.data
       const msg =
@@ -330,36 +405,39 @@ const Clues = () => {
     {
       title: '标题 / 来源',
       key: 'title',
-      render: (_: any, record: NewsClue) => (
-        <div>
-          <Space>
-            <BulbOutlined style={{ color: '#faad14', flexShrink: 0 }} />
-            <Tooltip title={record.title}>
-              {record.source_url ? (
-                <a href={normalizeExternalUrl(record.source_url)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
-                  <Text strong style={{ maxWidth: 260, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1890ff', textDecoration: 'none' }}>
-                    {record.title}
+      render: (_: any, record: NewsClue) => {
+        const searchKeywords = searchText ? searchText.split(',').map(k => k.trim()).filter(k => k) : []
+        return (
+          <div>
+            <Space>
+              <BulbOutlined style={{ color: '#faad14', flexShrink: 0 }} />
+              <Tooltip title={record.title}>
+                {record.source_url ? (
+                  <a href={normalizeExternalUrl(record.source_url)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
+                    <Text strong style={{ maxWidth: 260, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1890ff', textDecoration: 'none' }}>
+                      {searchKeywords.length > 0 ? <HighlightText text={record.title} keywords={searchKeywords} /> : record.title}
+                    </Text>
+                  </a>
+                ) : (
+                  <Text strong style={{ maxWidth: 260, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {searchKeywords.length > 0 ? <HighlightText text={record.title} keywords={searchKeywords} /> : record.title}
                   </Text>
+                )}
+              </Tooltip>
+              {record.source_url && (
+                <a href={normalizeExternalUrl(record.source_url)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="打开来源">
+                  <LinkOutlined style={{ color: '#1890ff', fontSize: 12 }} />
                 </a>
-              ) : (
-                <Text strong style={{ maxWidth: 260, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {record.title}
-                </Text>
               )}
-            </Tooltip>
-            {record.source_url && (
-              <a href={normalizeExternalUrl(record.source_url)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="打开来源">
-                <LinkOutlined style={{ color: '#1890ff', fontSize: 12 }} />
-              </a>
-            )}
-          </Space>
-          <div style={{ marginTop: 2 }}>
-            <Tag icon={<GlobalOutlined />} color="blue" style={{ margin: 0, fontSize: 11 }}>
-              {record.source && record.source.length > 10 ? record.source.slice(0, 10) + '..' : (record.source || '未知')}
-            </Tag>
+            </Space>
+            <div style={{ marginTop: 2 }}>
+              <Tag icon={<GlobalOutlined />} color="blue" style={{ margin: 0, fontSize: 11 }}>
+                {record.source && record.source.length > 10 ? record.source.slice(0, 10) + '..' : (record.source || '未知')}
+              </Tag>
+            </div>
           </div>
-        </div>
-      ),
+        )
+      },
       width: 300,
     },
     {
@@ -495,13 +573,39 @@ const Clues = () => {
         {/* 搜索筛选栏 */}
         <div style={{ padding: '12px 0', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', borderBottom: '1px solid #f0f0f0', marginBottom: 12 }}>
           <Input.Search
-            placeholder="搜索标题、内容或关键词"
+            placeholder="搜索标题、内容、关键词、来源或分类"
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             onSearch={handleSearch}
             allowClear
-            style={{ width: 220 }}
+            style={{ width: 260 }}
             size="small"
+          />
+          <Select
+            mode="multiple"
+            size="small"
+            placeholder="搜索范围"
+            allowClear
+            style={{ width: 200 }}
+            value={searchFields}
+            onChange={(values) => setSearchFields(values as string[])}
+            maxTagCount={2}
+          >
+            <Option value="title">标题</Option>
+            <Option value="content">内容</Option>
+            <Option value="keywords">关键词</Option>
+            <Option value="source">来源</Option>
+            <Option value="category">分类</Option>
+          </Select>
+          <Segmented
+            size="small"
+            value={searchMode}
+            onChange={(value) => setSearchMode(value as 'fuzzy' | 'exact' | 'smart')}
+            options={[
+              { label: '模糊搜索', value: 'fuzzy' },
+              { label: '精确匹配', value: 'exact' },
+              { label: '智能排序', value: 'smart' },
+            ]}
           />
           <Select size="small" placeholder="状态" allowClear style={{ width: 100 }} value={statusFilter} onChange={setStatusFilter}>
             <Option value="pending">待处理</Option>
@@ -522,6 +626,8 @@ const Clues = () => {
             message={<Space size={4} wrap>
               <Text type="secondary">筛选：</Text>
               {searchText && <Tag closable onClose={() => setSearchText('')}>{searchText}</Tag>}
+              {searchFields.length > 0 && <Tag closable onClose={() => setSearchFields([])}>范围: {searchFields.join(',')}</Tag>}
+              {searchMode !== 'fuzzy' && <Tag closable onClose={() => setSearchMode('fuzzy')}>{searchMode === 'exact' ? '精确匹配' : '智能排序'}</Tag>}
               {statusFilter && <Tag closable onClose={() => setStatusFilter(undefined)}>{statusFilter === 'pending' ? '待处理' : statusFilter === 'processed' ? '已处理' : '已归档'}</Tag>}
               {categoryFilter && <Tag closable onClose={() => setCategoryFilter(undefined)}>{categoryFilter}</Tag>}
             </Space>}
@@ -683,10 +789,23 @@ const Clues = () => {
         open={collectModalVisible} onOk={() => collectForm.submit()} onCancel={() => { setCollectModalVisible(false); collectForm.resetFields() }}
         confirmLoading={collecting} width={560} okText="开始采集" cancelText="取消"
       >
-        <Form form={collectForm} layout="vertical" onFinish={handleCollect} initialValues={{ channels: ['news_sites'], maxResults: 15 }}>
+        <Form form={collectForm} layout="vertical" onFinish={handleCollect} initialValues={{ channels: ['ithome', '36kr'], maxResults: 15 }}>
           <Alert
-            message="定向采集"
-            description="请先选择具体新闻媒体或「全网」，再设采集条数上限；不选「全网」时结果主要来自所选门户/RSS，避免来源过于随机。"
+            message="多渠道新闻采集"
+            description={
+              <div>
+                <p>输入关键词后，系统将从选定渠道自动采集相关新闻线索并保存到数据库。</p>
+                <div style={{ marginTop: 8, padding: '8px 12px', background: '#fffbe6', borderRadius: 6, fontSize: 12 }}>
+                  <Text strong style={{ color: '#d48806' }}>💡 推荐配置：</Text>
+                  <ul style={{ margin: '4px 0 0 0', paddingLeft: 20, color: '#666' }}>
+                    <li><strong>稳定渠道：</strong>IT之家、36氪（RSS源，速度快）</li>
+                    <li><strong>备用渠道：</strong>少数派、钛媒体</li>
+                    <li><strong>实验性：</strong>知乎日报、HackerNews（可能不稳定）</li>
+                    <li><strong>搜索发现：</strong>腾讯新闻、网易新闻等（通过搜索引擎）</li>
+                  </ul>
+                </div>
+              </div>
+            }
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
@@ -697,29 +816,28 @@ const Clues = () => {
           <Form.Item name="channels" label="媒体与渠道" rules={[{ required: true, message: '请至少选择一项' }]}>
             <Select
               mode="multiple"
-              placeholder="选择新闻媒体、全网搜索或社交平台"
+              placeholder="选择渠道"
               allowClear
               optionFilterProp="children"
-              listHeight={320}
             >
-              <Select.OptGroup label="新闻门户（推荐指定媒体）">
-                <Option value="news_sites">全网资讯（Bing 混合，来源不固定）</Option>
-                <Option value="tencent">腾讯新闻</Option>
-                <Option value="netease">网易新闻</Option>
-                <Option value="sina">新浪新闻</Option>
-                <Option value="ifeng">凤凰网</Option>
-                <Option value="thepaper">澎湃新闻</Option>
-                <Option value="sohu">搜狐新闻</Option>
-                <Option value="toutiao">今日头条</Option>
+              <Select.OptGroup label="RSS 订阅源（推荐）">
+                {sources.rss.map((s: any) => (
+                  <Option key={s.key} value={s.key}>{s.name}（{s.category}）</Option>
+                ))}
               </Select.OptGroup>
-              <Select.OptGroup label="社交与政务">
-                <Option value="weibo">微博（定向）</Option>
-                <Option value="social_media">知乎 / 微信 / 小红书等（Bing 社媒）</Option>
-                <Option value="government">政府网站（gov.cn）</Option>
+              <Select.OptGroup label="API 源">
+                {sources.api.map((s: any) => (
+                  <Option key={s.key} value={s.key}>{s.name}（{s.category}）</Option>
+                ))}
+              </Select.OptGroup>
+              <Select.OptGroup label="搜索引擎发现">
+                {sources.search.map((s: any) => (
+                  <Option key={s.key} value={s.key}>{s.name}（{s.category}）</Option>
+                ))}
               </Select.OptGroup>
             </Select>
           </Form.Item>
-          <Form.Item name="maxResults" label="采集总条数上限" extra="多关键词、多来源时会去重，实际条数可能略少于上限">
+          <Form.Item name="maxResults" label="采集总条数上限" extra="关键词越精准、上限越大，结果越丰富">
             <Select>
               <Option value={5}>5 条</Option>
               <Option value={10}>10 条</Option>
@@ -744,7 +862,11 @@ const Clues = () => {
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Input.Search placeholder="输入关键词搜索相关资料" value={searchKeyword} onChange={(e) => setSearchKeyword(e.target.value)} onSearch={handleSearchInfo} loading={searchLoading} enterButton={<Button type="primary" icon={<SearchOutlined />}>搜索</Button>} size="large" />
           <Space wrap>
-            <Segmented value={searchSource} onChange={(val) => setSearchSource(val as string)} options={[{ label: '新闻', value: 'news' }, { label: '社交', value: 'social' }]} />
+            <Segmented value={searchSource} onChange={(val) => setSearchSource(val as string)} options={[
+              { label: '全部', value: 'news' },
+              ...sources.rss.map((s: any) => ({ label: s.name, value: s.key })),
+              ...sources.api.map((s: any) => ({ label: s.name, value: s.key })),
+            ]} />
             <Select value={searchMaxResults} onChange={setSearchMaxResults} style={{ width: 100 }} options={[
               { label: '15条', value: 15 },
               { label: '30条', value: 30 },

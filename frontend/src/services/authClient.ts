@@ -21,7 +21,7 @@ function parseApiError(err: unknown): string {
   const d = ax.response?.data
   if (!d) {
     if (ax.code === 'ERR_NETWORK' || ax.message === 'Network Error') {
-      return '无法连接服务器，请确认后端已启动（默认 http://127.0.0.1:8000）且与前端代理一致'
+      return '无法连接服务器，请确认后端已启动（默认 http://127.0.0.1:8008）且与前端代理一致'
     }
     return '请求失败，请稍后重试'
   }

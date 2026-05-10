@@ -22,10 +22,14 @@ class Clue(Base):
 
     # 收集由
     collected_by = Column(String(50), default="system")
+
+    # 新闻分类（如：科技、经济、社会等）
+    category = Column(String(50), default="")
     channel = Column(String(50), default="")
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    processed_at = Column(DateTime, nullable=True)
 
 
 # 别名，兼容旧代码

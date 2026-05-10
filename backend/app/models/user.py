@@ -1,20 +1,20 @@
 """用户模型"""
+import hashlib
 from sqlalchemy import Column, Integer, String, Boolean, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
-from passlib.context import CryptContext
 
 from app.models.base import Base
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    """获取密码哈希值"""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """验证密码"""
+    return hashlib.sha256(plain_password.encode()).hexdigest() == hashed_password
 
 
 class User(Base):
