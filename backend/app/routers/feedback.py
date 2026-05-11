@@ -1,5 +1,5 @@
 """反馈路由：反馈统计、趋势、记录互动"""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,7 +29,6 @@ def _feedback_summary(article: Article, feedback: Optional[Feedback] = None) -> 
         "share_count": share_count,
         "engagement_rate": engagement_rate,
         "trending_score": trending_score,
-        "feedback_summary": feedback.feedback_summary if feedback else "",
         "created_at": feedback.created_at.isoformat() if feedback and feedback.created_at else article.created_at.isoformat() if article.created_at else "",
         "updated_at": feedback.updated_at.isoformat() if feedback and feedback.updated_at else article.updated_at.isoformat() if article.updated_at else "",
     }
@@ -44,7 +43,6 @@ def _upsert_feedback(db: Session, article: Article) -> Feedback:
     feedback.like_count = max(article.like_count or 0, feedback.like_count or 0)
     feedback.engagement_rate = round(((feedback.like_count or 0) + (feedback.comment_count or 0) + (feedback.share_count or 0)) / max(feedback.view_count or 1, 1) * 100, 2)
     feedback.trending_score = round(min(100.0, (feedback.view_count or 0) * 0.5 + (feedback.like_count or 0) * 3 + (feedback.comment_count or 0) * 4 + (feedback.share_count or 0) * 5), 2)
-    feedback.feedback_summary = f"阅读 {feedback.view_count}，点赞 {feedback.like_count}，互动率 {feedback.engagement_rate}%"
     article.view_count = feedback.view_count
     article.like_count = feedback.like_count
     return feedback
@@ -87,7 +85,7 @@ async def get_feedback_stats(days: int = 7, db: Session = Depends(get_db)):
 
 @router.get("/trends")
 async def get_feedback_trends(days: int = 7, db: Session = Depends(get_db)):
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     start_day = today - timedelta(days=days - 1)
     articles = db.query(Article).all()
     feedback_rows = {row.article_id: row for row in db.query(Feedback).all() if row.article_id is not None}

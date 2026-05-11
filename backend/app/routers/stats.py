@@ -1,5 +1,5 @@
 """统计路由：仪表盘统计数据"""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -31,7 +31,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
     total_views = db.query(func.sum(Article.view_count)).scalar() or 0
     total_likes = db.query(func.sum(Article.like_count)).scalar() or 0
 
-    since = datetime.utcnow() - timedelta(days=7)
+    since = datetime.now(timezone.utc) - timedelta(days=7)
     recent_clues = db.query(Clue).filter(Clue.created_at >= since).count()
     recent_articles = db.query(Article).filter(Article.created_at >= since).count()
 

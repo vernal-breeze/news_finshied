@@ -50,6 +50,26 @@ _RSS_FEEDS: dict[str, dict] = {
         "name": "奇客Solidot",
         "category": "科技",
     },
+    "ifanr": {
+        "url": "https://www.ifanr.com/feed",
+        "name": "爱范儿",
+        "category": "科技",
+    },
+    "tmtpost": {
+        "url": "https://www.tmtpost.com/rss.xml",
+        "name": "钛媒体",
+        "category": "科技·财经",
+    },
+    "geekpark": {
+        "url": "https://www.geekpark.net/rss",
+        "name": "极客公园",
+        "category": "科技",
+    },
+    "freebuf": {
+        "url": "https://www.freebuf.com/feed",
+        "name": "FreeBuf",
+        "category": "安全",
+    },
 }
 
 # API/JSON 源配置（非 RSS 格式的 API 源）
@@ -81,14 +101,111 @@ _API_FEEDS: dict[str, dict] = {
 }
 
 
-# 搜索引擎源配置（真正的关键词搜索）
+# 搜索引擎源配置（Bing RSS — 唯一可用的静态HTML搜索源）
 _SEARCH_FEEDS: dict[str, dict] = {
-    "sogou_news": {
-        "name": "搜狗新闻",
+    "bing_cn_news": {
+        "name": "Bing新闻搜索",
         "category": "综合",
-        "type": "sogou",
+        "type": "bing",
     },
 }
+
+
+def _split_chinese_keywords(keyword: str) -> list[str]:
+    """将中文关键词拆分为2字以上的词组，用于模糊匹配。
+    例如: "人工智能技术" -> ["人工智能", "智能技术", "人工", "智能", "技术"]
+    """
+    kw = keyword.strip()
+    if not kw:
+        return []
+    # 英文直接返回
+    if all(ord(c) < 128 for c in kw):
+        return [kw.lower()]
+    
+    parts = []
+    # 完整关键词
+    parts.append(kw)
+    # 2字词组滑窗
+    for i in range(len(kw) - 1):
+        for length in [2, 3, 4]:
+            if i + length <= len(kw):
+                chunk = kw[i:i+length]
+                if len(chunk) >= 2 and chunk not in parts:
+                    parts.append(chunk)
+    return parts
+
+
+def _keyword_relevance(keyword: str, title: str, snippet: str = "") -> float:
+    """计算关键词与标题/摘要的匹配度分数（0-100）。
+    
+    评分规则:
+    - 标题完整包含关键词: 100
+    - 标题包含2字以上词组: 60-80
+    - 摘要完整包含关键词: 40
+    - 摘要包含2字以上词组: 20-30
+    - 无匹配: 0
+    """
+    if not keyword or not title:
+        return 0.0
+    
+    kw = keyword.strip().lower()
+    title_lower = title.lower()
+    snippet_lower = (snippet or "").lower()
+    
+    # 标题完整包含关键词 → 最高分
+    if kw in title_lower:
+        return 100.0
+    
+    # 拆分关键词为子词组
+    sub_kws = _split_chinese_keywords(kw)
+    
+    # 标题包含子词组
+    title_score = 0.0
+    for sub in sub_kws:
+        if sub in title_lower:
+            # 词组越长，分数越高
+            weight = min(len(sub) / len(kw), 1.0)
+            title_score = max(title_score, 60.0 + weight * 20.0)
+    
+    # 摘要匹配
+    snippet_score = 0.0
+    if kw in snippet_lower:
+        snippet_score = 40.0
+    else:
+        for sub in sub_kws:
+            if sub in snippet_lower:
+                weight = min(len(sub) / len(kw), 1.0)
+                snippet_score = max(snippet_score, 20.0 + weight * 10.0)
+    
+    return max(title_score, snippet_score)
+
+
+def _filter_and_sort_by_relevance(items: list[dict], keyword: str, min_score: float = 15.0) -> list[dict]:
+    """过滤并按关键词匹配度排序结果。
+    
+    Args:
+        items: 原始结果列表
+        keyword: 搜索关键词
+        min_score: 最低匹配分数阈值（低于此分数的结果被过滤）
+    
+    Returns:
+        按匹配度降序排列的结果列表
+    """
+    if not keyword:
+        return items
+    
+    # 计算每条结果的匹配度
+    scored = []
+    for item in items:
+        title = item.get("title", "")
+        snippet = item.get("snippet", "")
+        score = _keyword_relevance(keyword, title, snippet)
+        if score >= min_score:
+            scored.append((score, item))
+    
+    # 按匹配度降序排列
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored]
 
 
 def _fetch_rss_feed(source: str, keyword: str = "", max_results: int = 10) -> list[dict]:
@@ -517,104 +634,80 @@ def _probe_url(url: str, quick: bool = True) -> tuple[bool, str, str, str]:
         return False, "", "", ""
 
 
-def _fetch_bing_news(keyword: str, max_results: int = 10) -> list[dict]:
-    """通过 Bing 新闻搜索采集线索（国内可访问）。"""
+def _fetch_bing_search(keyword: str, max_results: int = 10) -> list[dict]:
+    """通过 Bing 搜索 RSS 接口采集新闻线索（唯一可用的中文搜索引擎接口）。
+
+    Bing 的 ?format=rss 参数返回真正的 RSS XML（非 JS 渲染），
+    在搜狗/360/百度等主流中文搜索引擎均 JS 渲染的情况下，这是唯一的可用方案。
+    """
     query = keyword.strip()
     if not query:
         return []
     try:
-        # 添加随机延迟避免被封
         import random
         time.sleep(random.uniform(0.5, 1.5))
 
+        # Bing search RSS endpoint: 稳定返回 XML 格式结果
         resp = requests.get(
-            "https://www.bing.com/news/search",
-            params={"q": query, "setlang": "zh-CN", "cc": "CN", "form": "HDRSC3"},
+            "https://www.bing.com/search",
+            params={
+                "q": f"{query} 新闻",
+                "format": "rss",
+                "mkt": "zh-CN",
+                "setlang": "zh-cn",
+                "count": max_results + 10,  # 多取一些供过滤
+            },
             headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "Accept-Encoding": "gzip, deflate",
-                "Connection": "keep-alive",
-                "Cache-Control": "no-cache",
             },
-            timeout=12,
+            timeout=8,
             allow_redirects=True,
         )
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # 解析 RSS XML
+        soup = BeautifulSoup(resp.text, "xml")
         results: list[dict] = []
         seen: set[str] = set()
 
-        # Bing 新闻卡片选择器（按优先级）
-        selectors = [
-            ".news-card a[href]",           # 标准新闻卡片
-            ".news-card-body a[href]",      # 卡片正文链接
-            "a.title[href]",                # 标题链接
-            "div.card-with-cluster a[href]", # 集群卡片
-            "h2 a[href]",                   # h2 标题
-            "h3 a[href]",                   # h3 标题
-            "a[href*='news'][data-url]",    # 带 data-url 的新闻链接
-        ]
+        for item in soup.find_all("item"):
+            title_el = item.find("title")
+            link_el = item.find("link")
+            desc_el = item.find("description")
 
-        for selector in selectors:
-            for a in soup.select(selector):
-                text = a.get_text(" ", strip=True)
-                href = (a.get("href") or a.get("data-url") or "").strip()
+            title = title_el.get_text(strip=True) if title_el else ""
+            link = link_el.get_text(strip=True) if link_el else ""
+            desc = desc_el.get_text(strip=True) if desc_el else ""
 
-                if not text or len(text) < 6 or len(text) > 200:
-                    continue
-                if not href.startswith("http"):
-                    continue
-                if any(d in href for d in ["bing.com", "microsoft.com", "go.microsoft"]):
-                    continue
-                if text in seen or _looks_like_error_page(text, ""):
-                    continue
+            # 清理 HTML 标签
+            desc = re.sub(r"<[^>]+>", " ", desc).strip()[:300]
 
-                seen.add(text)
-                # 尝试获取摘要
-                snippet = ""
-                parent = a.find_parent(["div", "article"])
-                if parent:
-                    desc_el = parent.select_one(".snippet, .descripion, p")
-                    if desc_el:
-                        snippet = desc_el.get_text(strip=True)[:200]
-
-                results.append({
-                    "title": text,
-                    "url": href,
-                    "snippet": snippet,
-                    "source": "Bing 新闻",
-                    "category": "综合",
-                })
-
-                if len(results) >= max_results:
-                    return results
-
-        # 回退：解析所有外部链接
-        for a in soup.select("a[href]"):
-            text = a.get_text(" ", strip=True)
-            href = (a.get("href") or "").strip()
-
-            if not text or len(text) < 8 or len(text) > 200:
+            # 跳过非新闻类结果和聚合网站
+            if not title or len(title) < 6 or len(title) > 200:
                 continue
-            if not href.startswith("http"):
-                continue
-            if any(d in href for d in ["bing.com", "microsoft.com", "go.microsoft"]):
-                continue
-            if text in seen or _looks_like_error_page(text, ""):
+            if not link.startswith("http"):
                 continue
 
-            skip_patterns = ["增值电信", "ICP备", "公网安备", "隐私", "Cookie", "法律声明", "广告", "登录", "注册"]
-            if any(p in text for p in skip_patterns):
+            skip_domains = ["bing.com", "microsoft.com", "go.microsoft"]
+            if any(d in link for d in skip_domains):
                 continue
 
-            seen.add(text)
+            # 跳过导航/百科/广告类
+            skip_patterns = ["百度百科", "维基百科", "增值电信", "ICP备", "Cookie", "登录", "注册"]
+            if any(p in title for p in skip_patterns):
+                continue
+
+            if title in seen:
+                continue
+            seen.add(title)
+
             results.append({
-                "title": text,
-                "url": href,
-                "snippet": "",
-                "source": "Bing 新闻",
+                "title": title,
+                "url": link,
+                "snippet": desc,
+                "source": "Bing搜索",
                 "category": "综合",
             })
 
@@ -623,71 +716,7 @@ def _fetch_bing_news(keyword: str, max_results: int = 10) -> list[dict]:
 
         return results
     except Exception as e:
-        print(f"Bing news fetch error: {e}")
-        return []
-
-
-def _fetch_sogou_news(keyword: str, max_results: int = 10) -> list[dict]:
-    """通过搜狗新闻搜索采集线索（国内备用搜索引擎）。"""
-    query = keyword.strip()
-    if not query:
-        return []
-    try:
-        import random
-        time.sleep(random.uniform(0.5, 1.5))
-
-        resp = requests.get(
-            "https://news.sogou.com/news",
-            params={"query": query, "sort": 1},
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Referer": "https://news.sogou.com/",
-            },
-            timeout=12,
-            allow_redirects=True,
-        )
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        results: list[dict] = []
-        seen: set[str] = set()
-
-        # 搜狗新闻结果选择器
-        for item in soup.select(".news-list li, .vrwrap, .rb"):
-            a = item.select_one("h3 a[href], .txt-tag a[href], a[href]")
-            if not a:
-                continue
-            text = a.get_text(" ", strip=True)
-            href = (a.get("href") or "").strip()
-
-            if not text or len(text) < 6:
-                continue
-            if not href.startswith("http"):
-                continue
-            if text in seen:
-                continue
-
-            seen.add(text)
-            snippet = ""
-            desc = item.select_one(".txt-info, .str-text-info, p")
-            if desc:
-                snippet = desc.get_text(strip=True)[:200]
-
-            results.append({
-                "title": text,
-                "url": href,
-                "snippet": snippet,
-                "source": "搜狗新闻",
-                "category": "综合",
-            })
-
-            if len(results) >= max_results:
-                break
-
-        return results
-    except Exception as e:
-        print(f"Sogou news fetch error: {e}")
+        print(f"Bing RSS search error: {e}")
         return []
 
 
@@ -700,7 +729,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10,
     # API 源映射
     api_source_map = {k: k for k in _API_FEEDS}
 
-    # 如果指定了特定 RSS 源
+    # 如果指定了特定 RSS 源（不应用相关性过滤，因为已有两阶段回退机制）
     if source in rss_source_map:
         return _fetch_rss_feed(rss_source_map[source], query, max_results)
 
@@ -710,50 +739,57 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10,
 
     # 如果指定了特定搜索源
     if source in _SEARCH_FEEDS:
-        if source == "sogou_news":
-            return _fetch_sogou_news(query, max_results)
+        if source == "bing_cn_news":
+            return _filter_and_sort_by_relevance(_fetch_bing_search(query, max_results), query)
         return []
 
-    # "all" 模式：聚合所有 RSS + API 源 + 搜索引擎
+    # "all" 模式：聚合所有源，按搜索链顺序调用
     all_items: list[dict] = []
     seen_titles: set[str] = set()
 
-    # 如果有关键词，优先用搜索引擎获取精准结果（搜狗新闻）
+    # 1. RSS 源（带关键词过滤）
+    for rss_key in _RSS_FEEDS:
+        try:
+            rss_results = _fetch_rss_feed(rss_key, query, max_results)
+            for item in rss_results:
+                t = item.get("title", "")
+                if t and t not in seen_titles:
+                    seen_titles.add(t)
+                    all_items.append(item)
+        except Exception:
+            pass
+
+    # 2. API 源（热搜榜等，不按关键词过滤）
+    for api_key in _API_FEEDS:
+        try:
+            api_results = _fetch_api_feed(api_key, query, max_results)
+            for item in api_results:
+                t = item.get("title", "")
+                if t and t not in seen_titles:
+                    seen_titles.add(t)
+                    all_items.append(item)
+        except Exception:
+            pass
+
+    # 3. 搜索引擎源（Bing RSS — 关键词精确搜索）
     if query:
-        sogou_results = _fetch_sogou_news(query, max_results)
-        for item in sogou_results:
-            t = item.get("title", "")
-            if t and t not in seen_titles:
-                seen_titles.add(t)
-                all_items.append(item)
+        try:
+            bing_results = _fetch_bing_search(query, max_results)
+            for item in bing_results:
+                t = item.get("title", "")
+                if t and t not in seen_titles:
+                    seen_titles.add(t)
+                    all_items.append(item)
+        except Exception:
+            pass
 
-    # 从所有 RSS 源获取（不限制关键词，先获取再过滤）
-    rss_results = _fetch_all_rss("", max_results * 2)
-    for item in rss_results:
-        t = item.get("title", "")
-        if t and t not in seen_titles:
-            seen_titles.add(t)
-            all_items.append(item)
-
-    # 从所有 API 源获取
-    for api_source in _API_FEEDS:
-        api_results = _fetch_api_feed(api_source, query, max_results)
-        for item in api_results:
-            t = item.get("title", "")
-            if t and t not in seen_titles:
-                seen_titles.add(t)
-                all_items.append(item)
-
-    # 如果有关键词，优先返回匹配的结果；否则交叉排列各源结果
+    # 4. 关键词过滤 + 按匹配度排序
     if query:
-        query_lower = query.lower()
-        matched = [item for item in all_items
-                   if query_lower in item.get("title", "").lower()
-                   or query_lower in item.get("snippet", "").lower()]
-        if matched:
-            return matched[:max_results]
+        filtered = _filter_and_sort_by_relevance(all_items, query, min_score=15.0)
+        if filtered:
+            return filtered[:max_results]
 
-    # 交叉排列：按来源分组，轮流从每个来源取一条，避免单一来源占满结果
+    # 5. 回退：交叉排列各源结果
     from collections import defaultdict
     by_source: dict[str, list[dict]] = defaultdict(list)
     for item in all_items:
@@ -1209,6 +1245,15 @@ async def collect_multichannel(
             source = _ensure_source_name(str(item.get("source") or "all"))
             category = str(item.get("category") or "")
             source_url = str(item.get("url") or "").strip() or None
+            
+            # 数据库级别去重：检查是否已存在相同标题+来源的线索
+            existing = db.query(Clue).filter(
+                Clue.title == title,
+                Clue.source == source
+            ).first()
+            if existing:
+                continue
+            
             news_score, prop_score = _score_clue(title, snippet)
             clue = Clue(
                 title=title,
