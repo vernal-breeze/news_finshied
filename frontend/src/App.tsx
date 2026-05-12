@@ -4,9 +4,9 @@ import { ToastProvider } from './components/common/Toast'
 import { ErrorBoundary } from './components/common/ErrorBoundary'
 import MainLayout from './components/layouts/MainLayout'
 import ReviewLayout from './components/layouts/ReviewLayout'
-import { EditorHome as Home, Clues, Articles, Analytics, AIArticle, Topics } from './pages/editor'
+import { EditorHome as Home, Clues, Articles, Analytics, AIArticle, Topics, Profile, EditorSettings } from './pages/editor'
 import { EditorLogin, Register } from './pages/auth'
-import { ReviewLogin, ReviewDashboard, ReviewQueue, Published, Settings } from './pages/review'
+import { ReviewLogin, ReviewDashboard, ReviewQueue, Published, Settings, ReviewProfile } from './pages/review'
 import { ReaderHome, ReaderArticleDetail, ReaderSearch, ReaderCategory, ReaderMessages } from './pages/reader'
 import './App.css'
 
@@ -156,6 +156,30 @@ function App() {
               </EditorRoute>
             }
           />
+          <Route
+            path="/editor/profile"
+            element={
+              <EditorRoute>
+                <Layout style={{ minHeight: '100vh' }}>
+                  <MainLayout>
+                    <Profile />
+                  </MainLayout>
+                </Layout>
+              </EditorRoute>
+            }
+          />
+          <Route
+            path="/editor/settings"
+            element={
+              <EditorRoute>
+                <Layout style={{ minHeight: '100vh' }}>
+                  <MainLayout>
+                    <EditorSettings />
+                  </MainLayout>
+                </Layout>
+              </EditorRoute>
+            }
+          />
 
           {/* 兼容旧路径 */}
           <Route
@@ -189,6 +213,7 @@ function App() {
             <Route index element={<ReviewDashboard />} />
             <Route path="queue" element={<ReviewQueue />} />
             <Route path="published" element={<Published />} />
+            <Route path="profile" element={<ReviewProfile />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

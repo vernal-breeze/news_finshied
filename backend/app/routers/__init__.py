@@ -17,6 +17,8 @@ from app.routers.collection import router as collection_router
 from app.routers.stats import router as stats_router
 from app.routers.text import router as text_router
 from app.routers.ai import router as ai_router
+from app.routers.users import router as users_router
+from app.routers.settings import router as settings_router
 
 __all__ = [
     "auth_router",
@@ -35,4 +37,6 @@ __all__ = [
     "stats_router",
     "ai_router",
     "text_router",
+    "users_router",
+    "settings_router",
 ]

@@ -2,6 +2,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.database import engine, Base
@@ -11,6 +12,7 @@ from app.routers import (
     articles_router, content_router, reviews_router, article_reviews_router,
     feedback_router, public_router, upload_router, messages_router,
     collection_router, stats_router, text_router, ai_router,
+    users_router, settings_router,
 )
 
 settings = get_settings()
@@ -63,3 +65,9 @@ app.include_router(collection_router)
 app.include_router(stats_router)
 app.include_router(text_router)
 app.include_router(ai_router)
+app.include_router(users_router)
+app.include_router(settings_router)
+
+# 静态文件挂载 — 供 Vite proxy /uploads 使用
+from app.routers.public import UPLOAD_DIR
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")

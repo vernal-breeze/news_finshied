@@ -114,7 +114,7 @@ const ReviewLayout: React.FC = () => {
       window.dispatchEvent(new Event('auth-changed'))
       navigate('/review/login')
     } else if (key === 'profile') {
-      toast.info('个人信息页面开发中')
+      navigate('/review/profile')
     } else {
       navigate(key)
     }

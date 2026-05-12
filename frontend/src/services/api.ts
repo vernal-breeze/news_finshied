@@ -285,6 +285,24 @@ export const topicAPI = {
 }
 
 // 系统 API
+export const userAPI = {
+  getProfile: () => api.get('/api/users/me'),
+  updateProfile: (data: { nickname?: string; email?: string; full_name?: string }) =>
+    api.put('/api/users/me', data),
+  updatePassword: (data: { old_password: string; new_password: string }) =>
+    api.put('/api/users/me/password', data),
+  uploadAvatar: (file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return api.post('/api/users/me/avatar', fd)
+  },
+}
+
+export const settingsAPI = {
+  get: () => api.get('/api/settings'),
+  update: (data: Record<string, unknown>) => api.put('/api/settings', data),
+}
+
 export const uploadAPI = {
   /** 需登录；响应体为 { code, message, data: { url } } */
   image: (file: File) => {

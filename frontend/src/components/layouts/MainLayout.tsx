@@ -178,11 +178,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       return
     }
     if (key === 'profile') {
-      toast.info('个人中心功能开发中')
+      navigate('/editor/profile')
       return
     }
     if (key === 'settings') {
-      toast.info('系统设置功能开发中')
+      navigate('/editor/settings')
       return
     }
     if (key === 'help') {
