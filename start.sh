@@ -244,7 +244,7 @@ ensure_backend_deps() {
         source "${BACKEND_DIR}/venv/bin/activate"
     else
         # venv 不存在或不完整，检查系统 Python 是否有依赖
-        if python3 -c "import fastapi, uvicorn, sqlalchemy, requests, bs4" 2>/dev/null; then
+        if python3 -c "import fastapi, uvicorn, sqlalchemy, requests, bs4, curl_cffi, tenacity" 2>/dev/null; then
             log_ok "使用系统 Python（依赖已就绪）"
             return
         fi
@@ -256,7 +256,7 @@ ensure_backend_deps() {
     # 默认离线友好：依赖可用就跳过联网安装
     if [ "${FORCE_INSTALL:-0}" != "1" ] && python3 - <<'PY'
 import importlib.util as u
-mods = ["fastapi", "uvicorn", "sqlalchemy", "requests", "bs4", "pydantic", "pydantic_settings"]
+mods = ["fastapi", "uvicorn", "sqlalchemy", "requests", "bs4", "pydantic", "pydantic_settings", "curl_cffi", "tenacity"]
 missing = [m for m in mods if u.find_spec(m) is None]
 raise SystemExit(1 if missing else 0)
 PY

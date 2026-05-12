@@ -789,7 +789,7 @@ const Clues = () => {
         open={collectModalVisible} onOk={() => collectForm.submit()} onCancel={() => { setCollectModalVisible(false); collectForm.resetFields() }}
         confirmLoading={collecting} width={560} okText="开始采集" cancelText="取消"
       >
-        <Form form={collectForm} layout="vertical" onFinish={handleCollect} initialValues={{ channels: ['ithome', '36kr'], maxResults: 15 }}>
+        <Form form={collectForm} layout="vertical" onFinish={handleCollect} initialValues={{ channels: ['all'], maxResults: 15 }}>
           <Alert
             message="多渠道新闻采集"
             description={
