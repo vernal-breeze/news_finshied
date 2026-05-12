@@ -88,7 +88,7 @@ class ArticleUpdate(BaseModel):
     status: Optional[str] = None
     clue_id: Optional[int] = None
     topic_id: Optional[int] = None
-    author: Optional[str] = None
+    author_id: Optional[int] = None
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -152,17 +152,24 @@ async def create_article(body: ArticleCreate, db: Session = Depends(get_db)):
 
 @router.put("/{article_id}")
 async def update_article(article_id: int, body: ArticleUpdate, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="文章不存在")
-    payload = body.model_dump(exclude_none=True)
-    if "title" in payload and payload["title"] is None:
-        payload.pop("title")
-    for k, v in payload.items():
-        setattr(article, k, v)
-    db.commit()
-    db.refresh(article)
-    return {"code": 200, "message": "更新成功", "data": _format_article(article, db)}
+    try:
+        article = db.query(Article).filter(Article.id == article_id).first()
+        if not article:
+            raise HTTPException(status_code=404, detail="文章不存在")
+        payload = body.model_dump(exclude_none=True)
+        if "title" in payload and payload["title"] is None:
+            payload.pop("title")
+        for k, v in payload.items():
+            setattr(article, k, v)
+        db.commit()
+        db.refresh(article)
+        return {"code": 200, "message": "更新成功", "data": _format_article(article, db)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"[update_article] ERROR: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"文章更新失败: {str(e)}")
 
 
 @router.delete("/{article_id}")

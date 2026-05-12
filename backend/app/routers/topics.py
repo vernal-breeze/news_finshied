@@ -79,25 +79,32 @@ def _serialize_topic(topic: Topic) -> dict:
     }
     return {
         "id": topic.id,
-        "title": topic.name,
-        "name": topic.name,
+        "title": topic.title,
+        "name": topic.title,
         "description": topic.description or "",
         "category": topic.category or "",
         "editor": topic.editor or "",
         "planned_date": topic.planned_date.isoformat() if topic.planned_date else None,
         "status": status_map.get(topic.status or "", topic.status or "draft"),
         "ref_clue_ids": _parse_ref_clue_ids(topic.ref_clue_ids),
-        "ai_score": topic.ai_score,
-        "ai_suggestion": topic.ai_suggestion or "",
-        "assigned_user_id": topic.assigned_user_id,
-        "performance_score": topic.performance_score,
+        "ai_score": getattr(topic, "ai_score", None),
+        "ai_suggestion": getattr(topic, "ai_suggestion", "") or "",
+        "assigned_user_id": getattr(topic, "assigned_user_id", None),
+        "performance_score": getattr(topic, "performance_score", None),
         "creator_id": None,
         "created_at": topic.created_at.isoformat() if topic.created_at else "",
         "updated_at": topic.updated_at.isoformat() if getattr(topic, "updated_at", None) else "",
     }
 
 
-def _serialize_article(article: Article) -> dict:
+def _serialize_article(article: Article, db: Session = None) -> dict:
+    """将 Article ORM 转为前端友好的 dict（安全访问所有属性）"""
+    author_name = ""
+    if db and article.author_id:
+        from app.models.user import User
+        user = db.query(User).filter(User.id == article.author_id).first()
+        if user:
+            author_name = user.nickname or user.full_name or user.username
     return {
         "id": article.id,
         "title": article.title,
@@ -108,16 +115,17 @@ def _serialize_article(article: Article) -> dict:
         "status": article.status,
         "category": article.category or "",
         "tags": [t.strip() for t in (article.tags or "").split(",") if t.strip()],
+        "tags_str": article.tags or "",
         "author_id": article.author_id,
-        "editor_id": article.editor_id,
+        "author": author_name,
+        "editor_id": getattr(article, "editor_id", None),
         "clue_id": article.clue_id,
         "topic_id": article.topic_id,
-        "author": "",
         "like_count": article.like_count or 0,
         "view_count": article.view_count or 0,
         "created_at": article.created_at.isoformat() if article.created_at else "",
         "updated_at": article.updated_at.isoformat() if article.updated_at else "",
-        "published_at": article.updated_at.isoformat() if article.updated_at else "",
+        "published_at": article.published_at.isoformat() if getattr(article, "published_at", None) else "",
     }
 
 
@@ -133,7 +141,7 @@ async def list_topics(
     if status:
         q = q.filter(Topic.status == status)
     if search:
-        q = q.filter(Topic.name.ilike(f"%{search}%") | Topic.description.ilike(f"%{search}%"))
+        q = q.filter(Topic.title.ilike(f"%{search}%") | Topic.description.ilike(f"%{search}%"))
     total = q.count()
     items = q.order_by(desc(Topic.created_at)).offset((page - 1) * page_size).limit(page_size).all()
     return {"code": 200, "data": [_serialize_topic(item) for item in items], "total": total, "page": page, "page_size": page_size}
@@ -150,7 +158,7 @@ async def get_topic(topic_id: int, db: Session = Depends(get_db)):
 @router.post("")
 async def create_topic(body: TopicCreate, db: Session = Depends(get_db)):
     topic = Topic(
-        name=body.title or body.name,
+        title=body.title or body.name,
         description=body.description,
         category=body.category,
         editor=body.editor,
@@ -171,8 +179,9 @@ async def update_topic(topic_id: int, body: TopicUpdate, db: Session = Depends(g
         raise HTTPException(status_code=404, detail="选题不存在")
 
     payload = body.model_dump(exclude_none=True)
-    if "title" in payload:
-        payload["name"] = payload.pop("title")
+    # 合并 name 到 title（模型列名为 title）
+    if "name" in payload:
+        payload["title"] = payload.pop("name")
     if "ref_clue_ids" in payload:
         payload["ref_clue_ids"] = json.dumps(payload["ref_clue_ids"] or [], ensure_ascii=False)
     for k, v in payload.items():
@@ -198,7 +207,7 @@ async def ai_analyze_topic(topic_id: int, db: Session = Depends(get_db)):
     if not topic:
         raise HTTPException(status_code=404, detail="选题不存在")
 
-    title = topic.name or "未命名选题"
+    title = topic.title or "未命名选题"
     ai_score = min(9.5, max(5.0, (len(title) % 10) + 0.5))
     suggestions = [
         f"从{title}角度出发，深度分析事件背景",
@@ -252,8 +261,13 @@ async def sync_feedback(topic_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{topic_id}/articles")
 async def get_topic_articles(topic_id: int, db: Session = Depends(get_db)):
-    items = db.query(Article).filter(Article.topic_id == topic_id).order_by(desc(Article.updated_at)).all()
-    return {"code": 200, "data": [_serialize_article(item) for item in items], "total": len(items)}
+    try:
+        items = db.query(Article).filter(Article.topic_id == topic_id).order_by(desc(Article.updated_at)).all()
+        return {"code": 200, "data": [_serialize_article(item, db) for item in items], "total": len(items)}
+    except Exception as e:
+        import traceback
+        print(f"[get_topic_articles] ERROR: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"获取选题关联稿件失败: {str(e)}")
 
 
 @router.get("/{topic_id}/available-articles")
@@ -269,27 +283,41 @@ async def get_available_articles(
         q = q.filter(Article.title.ilike(f"%{search}%"))
     total = q.count()
     items = q.order_by(desc(Article.updated_at)).offset((page - 1) * page_size).limit(page_size).all()
-    return {"code": 200, "data": [_serialize_article(item) for item in items], "total": total}
+    return {"code": 200, "data": [_serialize_article(item, db) for item in items], "total": total}
 
 
 @router.post("/{topic_id}/articles")
 async def link_article(topic_id: int, body: dict, db: Session = Depends(get_db)):
-    article_id = body.get("article_id")
-    if not article_id:
-        raise HTTPException(status_code=400, detail="缺少 article_id")
-    article = db.query(Article).filter(Article.id == int(article_id)).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="稿件不存在")
-    article.topic_id = topic_id
-    db.commit()
-    return {"code": 200, "message": "关联成功", "data": _serialize_article(article)}
+    try:
+        article_id = body.get("article_id")
+        if not article_id:
+            raise HTTPException(status_code=400, detail="缺少 article_id")
+        article = db.query(Article).filter(Article.id == int(article_id)).first()
+        if not article:
+            raise HTTPException(status_code=404, detail="稿件不存在")
+        article.topic_id = topic_id
+        db.commit()
+        return {"code": 200, "message": "关联成功", "data": _serialize_article(article, db)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"[link_article] ERROR: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"关联稿件失败: {str(e)}")
 
 
 @router.delete("/{topic_id}/articles/{article_id}")
 async def unlink_article(topic_id: int, article_id: int, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id, Article.topic_id == topic_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="稿件不存在")
-    article.topic_id = None
-    db.commit()
-    return {"code": 200, "message": "取消关联成功", "data": _serialize_article(article)}
+    try:
+        article = db.query(Article).filter(Article.id == article_id, Article.topic_id == topic_id).first()
+        if not article:
+            raise HTTPException(status_code=404, detail="稿件不存在")
+        article.topic_id = None
+        db.commit()
+        return {"code": 200, "message": "取消关联成功", "data": _serialize_article(article, db)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"[unlink_article] ERROR: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"取消关联失败: {str(e)}")

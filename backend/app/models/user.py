@@ -7,13 +7,33 @@ from datetime import datetime, timezone
 from app.models.base import Base
 
 
+def _try_bcrypt_hash(password: str) -> str:
+    """尝试用 bcrypt 生成哈希，不可用时返回 None"""
+    try:
+        import bcrypt
+        return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    except (ImportError, ModuleNotFoundError):
+        return None
+
+
 def get_password_hash(password: str) -> str:
-    """获取密码哈希值"""
+    """获取密码哈希值（优先 bcrypt，不可用时回退 sha256）"""
+    bcrypt_hash = _try_bcrypt_hash(password)
+    if bcrypt_hash:
+        return bcrypt_hash
     return hashlib.sha256(password.encode()).hexdigest()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """验证密码"""
+    """验证密码 — 自动检测 bcrypt / sha256 格式"""
+    # bcrypt 格式：$2b$ 或 $2a$ 开头
+    if hashed_password.startswith("$2"):
+        try:
+            import bcrypt
+            return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+        except (ImportError, ModuleNotFoundError, ValueError):
+            return False
+    # sha256 格式（legacy）
     return hashlib.sha256(plain_password.encode()).hexdigest() == hashed_password
 
 

@@ -1,5 +1,5 @@
 """选题模型"""
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey
 from datetime import datetime, timezone
 
 from app.models.base import Base
@@ -25,3 +25,13 @@ class Topic(Base):
     planned_date = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # AI 评分
+    ai_score = Column(Float, nullable=True)
+    ai_suggestion = Column(Text, default="")
+
+    # 绩效
+    performance_score = Column(Float, nullable=True)
+
+    # 指派
+    assigned_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
