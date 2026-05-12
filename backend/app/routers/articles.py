@@ -182,19 +182,6 @@ async def delete_article(article_id: int, db: Session = Depends(get_db)):
     return {"code": 200, "message": "删除成功"}
 
 
-@router.get("/{article_id}/versions")
-async def get_versions(article_id: int, db: Session = Depends(get_db)):
-    return {"code": 200, "data": [], "total": 0}
-
-
-@router.post("/{article_id}/version")
-async def create_version(article_id: int, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="文章不存在")
-    return {"code": 200, "message": "版本已创建", "data": {"article_id": article_id}}
-
-
 @router.post("/{article_id}/publish")
 async def publish_article(article_id: int, db: Session = Depends(get_db)):
     article = db.query(Article).filter(Article.id == article_id).first()

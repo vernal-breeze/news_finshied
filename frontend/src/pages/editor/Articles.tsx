@@ -91,9 +91,7 @@ const Articles = () => {
   const [searchText, setSearchText] = useState('')
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined)
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>(undefined)
-  const [versions, setVersions] = useState<Article[]>([])
   const [reviews, setReviews] = useState<any[]>([])
-  const [versionsLoading, setVersionsLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'table' | 'list'>('table')
   const [articleImages, setArticleImages] = useState<string[]>([])
   const [coverImage, setCoverImage] = useState<string>('')
@@ -274,25 +272,21 @@ const Articles = () => {
   const handleViewDetail = async (record: Article) => {
     setSelectedArticle(record)
     setDetailVisible(true)
-    setVersionsLoading(true)
 
     try {
-      // 同时加载稿件详情、版本历史、审核记录和选题信息
-      const [articleRes, versionsRes, reviewsRes] = await Promise.all([
+      // 同时加载稿件详情、审核记录和选题信息
+      const [articleRes, reviewsRes] = await Promise.all([
         articleAPI.get(record.id).catch(() => record), // 获取完整的稿件信息，包括topic_id
-        articleAPI.versions(record.id).catch(() => ({ data: { data: [] } })),
-        articleAPI.reviews(record.id).catch(() => ({ data: { data: [] } })),
+        articleAPI.reviews(record.id).catch(() => ({ data: [] })),
         fetchTopicOptions().catch(() => {}) // 加载选题列表
       ])
       
       // 更新selectedArticle为包含topic_id的完整信息
       setSelectedArticle((articleRes as any).data || articleRes)
-      setVersions((versionsRes as any).data?.data || [])
-      setReviews((reviewsRes as any).data?.data || [])
+      setReviews((reviewsRes as any).data || [])
     } catch (error) {
       console.error('获取详情失败:', error)
     } finally {
-      setVersionsLoading(false)
     }
   }
 
@@ -478,15 +472,6 @@ const Articles = () => {
         { text: '已发布', value: 'published' },
       ],
       onFilter: (value, record) => record.status === value,
-    },
-    {
-      title: '版本',
-      dataIndex: 'version',
-      key: 'version',
-      width: 80,
-      render: (version: number) => (
-        <Badge count={`v${version}`} style={{ backgroundColor: '#52c41a' }} />
-      ),
     },
     {
       title: '更新时间',
@@ -1212,41 +1197,6 @@ const Articles = () => {
               },
               {
                 key: '2',
-                label: '版本历史',
-                children: (
-                  <>
-                    {versionsLoading ? (
-                      <div style={{ textAlign: 'center', padding: '40px 0' }}>
-                        <Spin />
-                      </div>
-                    ) : versions.length > 0 ? (
-                      <Timeline mode="left">
-                        {versions.map((version) => (
-                          <Timeline.Item 
-                            key={version.id}
-                            dot={version.id === selectedArticle.id ? <CheckCircleOutlined style={{ color: '#52c41a' }} /> : undefined}
-                          >
-                            <div>
-                              <Space>
-                                <Text strong>版本 {version.version}</Text>
-                                {version.id === selectedArticle.id && <Tag color="green">当前</Tag>}
-                              </Space>
-                              <br />
-                              <Text type="secondary">
-                                {new Date(version.updated_at).toLocaleString('zh-CN')}
-                              </Text>
-                            </div>
-                          </Timeline.Item>
-                        ))}
-                      </Timeline>
-                    ) : (
-                      <Empty description="暂无版本历史" />
-                    )}
-                  </>
-                )
-              },
-              {
-                key: '3',
                 label: '审核记录',
                 children: (
                   <>
@@ -1284,7 +1234,7 @@ const Articles = () => {
                               </Space>
                               <br />
                               <Text type="secondary">
-                                {new Date(review.reviewed_at).toLocaleString('zh-CN')}
+                                {new Date(review.created_at).toLocaleString('zh-CN')}
                               </Text>
                               {review.comment && (
                                 <>
