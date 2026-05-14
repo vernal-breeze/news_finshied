@@ -17,6 +17,7 @@ class Message(Base):
     # 关联
     related_id = Column(Integer, nullable=True)
     related_type = Column(String(50), default="")
+    recipient_id = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     read_at = Column(DateTime, nullable=True)

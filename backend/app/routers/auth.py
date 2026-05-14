@@ -68,6 +68,7 @@ class UserResponse(BaseModel):
 # ---- OAuth2 scheme ----
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 # ---- Helpers ----
@@ -104,8 +105,21 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> User:
-    """FastAPI 依赖：从请求头 Authorization: Bearer <token> 中获取当前用户"""
+    """FastAPI 依赖：从请求头 Authorization: Bearer *** 中获取当前用户"""
     return _get_user_from_token(token, db)
+
+
+async def get_optional_user(
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """可选认证依赖：未提供 token 时返回 None（不抛 401）"""
+    if token is None:
+        return None
+    try:
+        return _get_user_from_token(token, db)
+    except HTTPException:
+        return None
 
 
 # ---- 路由 ----

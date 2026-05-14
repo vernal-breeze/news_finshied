@@ -6,14 +6,16 @@ import {
 } from 'antd'
 import { 
   SearchOutlined, ReloadOutlined, CheckCircleOutlined,
-  CloseCircleOutlined, RollbackOutlined, EyeOutlined, GlobalOutlined
+  CloseCircleOutlined, RollbackOutlined, EyeOutlined, GlobalOutlined,
+  HeartOutlined, HeartFilled
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { reviewAPI, articleAPI } from '../../services/api'
+import { reviewAPI, articleAPI, feedbackAPI } from '../../services/api'
 import { toast } from '../../components/common/Toast'
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
 import './Queue.css'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
 
 dayjs.extend(relativeTime)
 
@@ -56,6 +58,13 @@ const ReviewQueue: React.FC = () => {
     category: '',
     status: '',
   })
+  const [likedArticles, setLikedArticles] = useState<Set<number>>(new Set())
+
+  const handleLike = async (articleId: number) => {
+    setLikedArticles(prev => new Set(prev).add(articleId))
+    try { await feedbackAPI.recordLike(articleId) }
+    catch { toast.error('点赞失败') }
+  }
 
   useEffect(() => {
     fetchQueue()
@@ -189,6 +198,12 @@ const ReviewQueue: React.FC = () => {
       width: 200,
       render: (_, record) => (
         <Space>
+          <Button 
+            type="text"
+            size="small"
+            icon={likedArticles.has(record.id) ? <HeartFilled style={{ color: '#ff4d4f' }} /> : <HeartOutlined />}
+            onClick={() => handleLike(record.id)}
+          />
           <Button 
             type="link" 
             icon={<EyeOutlined />}
@@ -419,7 +434,10 @@ const ReviewQueue: React.FC = () => {
                 background: '#f5f5f5',
                 borderRadius: 4
               }}>
-                {selectedArticle.content || '暂无内容'}
+                <MarkdownRenderer
+                  content={selectedArticle.content || ''}
+                  style={{ padding: '8px 12px', background: '#f5f5f5', borderRadius: 4, maxHeight: 400, overflow: 'auto' }}
+                />
               </div>
             </Card>
 

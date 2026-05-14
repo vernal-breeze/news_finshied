@@ -133,6 +133,18 @@ function App() {
             }
           />
           <Route
+            path="/editor/articles/:id"
+            element={
+              <EditorRoute>
+                <Layout style={{ minHeight: '100vh' }}>
+                  <MainLayout>
+                    <Articles />
+                  </MainLayout>
+                </Layout>
+              </EditorRoute>
+            }
+          />
+          <Route
             path="/editor/analytics"
             element={
               <EditorRoute>

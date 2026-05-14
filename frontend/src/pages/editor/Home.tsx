@@ -15,8 +15,7 @@ import {
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { statsAPI, feedbackAPI } from '../../services/api'
-import type { FeedbackStats } from '../../types'
+import { statsAPI } from '../../services/api'
 import { toast } from '../../components/common/Toast'
 
 const { Title, Text } = Typography
@@ -36,10 +35,7 @@ const Home = () => {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const [dashRes, feedbackRes] = await Promise.all([
-          statsAPI.getDashboard(),
-          feedbackAPI.getStats(7),
-        ])
+        const dashRes = await statsAPI.getDashboard()
 
         const dash = (
           dashRes as {
@@ -47,10 +43,17 @@ const Home = () => {
               clues?: { total?: number }
               articles?: { total?: number; by_status?: Record<string, number> }
               topics?: { total?: number; active?: number }
+              feedback?: {
+                top_articles?: Array<{
+                  id: number
+                  title: string
+                  views: number
+                  trending_score: number
+                }>
+              }
             }
           }
         ).data
-        const feedbackData = (feedbackRes as { data?: FeedbackStats }).data as FeedbackStats | undefined
 
         const byStatus = dash?.articles?.by_status || {}
         const published = Number(byStatus.published ?? 0)
@@ -68,7 +71,7 @@ const Home = () => {
           active: dash?.topics?.active ?? 0,
         })
 
-        setTopArticles(feedbackData?.top_articles || [])
+        setTopArticles(dash?.feedback?.top_articles || [])
       } catch (error) {
         console.error('获取统计数据失败:', error)
         toast.error('获取统计数据失败')

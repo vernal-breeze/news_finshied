@@ -94,7 +94,7 @@ async def detailed_health_check(db: Session = Depends(get_db)):
         "ai_service": {
             "status": ai_status,
             "model": settings.AI_MODEL,
-            "provider": "siliconflow" if settings.SILICONFLOW_API_KEY else "mock",
+            "provider": "deepseek" if settings.DEEPSEEK_API_KEY else ("siliconflow" if settings.SILICONFLOW_API_KEY else "mock"),
         },
         "version": {
             "app": settings.APP_VERSION,

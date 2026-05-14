@@ -37,6 +37,9 @@ class Article(Base):
     quality_score = Column(Float, default=0.0)
     ai_score = Column(Float, default=0.0)
 
+    # 下线/驳回
+    reject_reason = Column(String(1000), default="")
+
     # 关联
     author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     topic_id = Column(Integer, ForeignKey("topics.id"), nullable=True)

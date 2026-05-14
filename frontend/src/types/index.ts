@@ -8,7 +8,7 @@ export interface NewsClue {
   keywords?: string[]
   news_value_score?: number
   propagation_potential?: number
-  status: 'pending' | 'processed' | 'archived'
+  status: 'pending' | 'processed' | 'converted' | 'archived'
   created_at: string
   processed_at?: string
 }
@@ -27,10 +27,13 @@ export interface Article {
   status: 'draft' | 'pending_review' | 'reviewing' | 'approved' | 'rejected' | 'published'
   version: number
   parent_version_id?: number
+  author_id?: number
   clue_id?: number
+  clue_title?: string
   topic_id?: number
   view_count?: number
   like_count?: number
+  reject_reason?: string
   created_at: string
   updated_at: string
   published_at?: string
@@ -107,6 +110,7 @@ export interface AIAnalysisResult {
 export interface ContentGenerationResult {
   suggested_titles: string[]
   draft_content: string
+  summary: string
   recommended_angles: string[]
   structure_suggestion: string
 }
@@ -148,12 +152,13 @@ export interface DashboardStats {
 export interface Message {
   id: number
   content: string
-  type: 'interaction' | 'system' | 'notification'
+  type: 'interaction' | 'system' | 'notification' | 'reply'
   is_read: boolean
   created_at: string
   sender?: string
   related_id?: number
   related_type?: 'article' | 'comment' | 'message'
+  recipient_id?: number | null
   read_at?: string | null
 }
 

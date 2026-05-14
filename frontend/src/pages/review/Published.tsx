@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Table, Card, Tag, Button, Space, Typography, Input, Select, Popconfirm } from 'antd'
+import { Table, Card, Tag, Button, Space, Typography, Input, Select, Modal } from 'antd'
 import { SearchOutlined, EyeOutlined, DeleteOutlined, ReloadOutlined, GlobalOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
@@ -8,6 +8,7 @@ import { toast } from '../../components/common/Toast'
 import './Published.css'
 
 const { Title, Text } = Typography
+const { TextArea } = Input
 
 interface PublishedArticle {
   id: number
@@ -26,6 +27,12 @@ const Published: React.FC = () => {
   const [searchText, setSearchText] = useState('')
   const [category, setCategory] = useState<string | undefined>()
   const [refreshKey, setRefreshKey] = useState(0)
+
+  // 下线弹窗
+  const [unpublishModalOpen, setUnpublishModalOpen] = useState(false)
+  const [unpublishArticleId, setUnpublishArticleId] = useState<number | null>(null)
+  const [unpublishReason, setUnpublishReason] = useState('')
+  const [unpublishing, setUnpublishing] = useState(false)
 
   useEffect(() => {
     fetchPublishedArticles()
@@ -52,18 +59,34 @@ const Published: React.FC = () => {
   }
 
   const handleViewArticle = (id: number) => {
-    // 打开文章详情页（读者端）
     window.open(`/reader/article/${id}`, '_blank')
   }
 
-  const handleOffline = async (id: number) => {
+  const handleUnpublish = async () => {
+    if (!unpublishArticleId) return
+    if (!unpublishReason.trim()) {
+      toast.error('请填写下线理由')
+      return
+    }
+    setUnpublishing(true)
     try {
-      await articleAPI.delete(id)
+      await articleAPI.unpublish(unpublishArticleId, unpublishReason.trim())
       toast.success('已下线')
+      setUnpublishModalOpen(false)
+      setUnpublishArticleId(null)
+      setUnpublishReason('')
       setRefreshKey(k => k + 1)
     } catch (error) {
       toast.error('下线失败')
+    } finally {
+      setUnpublishing(false)
     }
+  }
+
+  const openUnpublishModal = (id: number) => {
+    setUnpublishArticleId(id)
+    setUnpublishReason('')
+    setUnpublishModalOpen(true)
   }
 
   const filteredArticles = articles.filter(article => {
@@ -124,16 +147,14 @@ const Published: React.FC = () => {
           >
             访问网页
           </Button>
-          <Popconfirm
-            title="确定要下线这篇文章吗？"
-            onConfirm={() => handleOffline(record.id)}
-            okText="确定"
-            cancelText="取消"
+          <Button 
+            type="link" 
+            danger 
+            icon={<DeleteOutlined />}
+            onClick={() => openUnpublishModal(record.id)}
           >
-            <Button type="link" danger icon={<DeleteOutlined />}>
-              下线
-            </Button>
-          </Popconfirm>
+            下线
+          </Button>
         </Space>
       ),
     },
@@ -143,7 +164,7 @@ const Published: React.FC = () => {
     <div className="published-container">
       <div className="published-header">
         <Title level={2}>发布管理</Title>
-        <Text type="secondary">查看和管理已发布的稿件，点击"访问网页"可在浏览器中查看</Text>
+        <Text type="secondary">查看和管理已发布的稿件，下线时需要填写理由</Text>
       </div>
 
       <Card>
@@ -192,6 +213,27 @@ const Published: React.FC = () => {
           }}
         />
       </Card>
+
+      <Modal
+        title="下线确认"
+        open={unpublishModalOpen}
+        onOk={handleUnpublish}
+        onCancel={() => { setUnpublishModalOpen(false); setUnpublishReason('') }}
+        confirmLoading={unpublishing}
+        okText="确认下线"
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+      >
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary">请填写下线理由，作者将收到通知后进行修改并重新提交：</Text>
+        </div>
+        <TextArea
+          placeholder="例如：标题与内容不符、数据有误、配图不当..."
+          rows={3}
+          value={unpublishReason}
+          onChange={e => setUnpublishReason(e.target.value)}
+        />
+      </Modal>
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Card,
   Row,
@@ -12,7 +13,6 @@ import {
   Empty,
   Typography,
   Divider,
-  Progress,
 } from 'antd'
 import { toast } from '../../components/common/Toast'
 import {
@@ -24,18 +24,34 @@ import {
   FireOutlined,
   ReloadOutlined,
   TrophyOutlined,
+  ExportOutlined,
 } from '@ant-design/icons'
-import { feedbackAPI, articleAPI, unwrapPaginated } from '../../services/api'
-import type { FeedbackStats, Article, PublicationFeedback } from '../../types'
+import { feedbackAPI, unwrapPaginated } from '../../services/api'
+import type { FeedbackStats } from '../../types'
 
 const { Title, Text } = Typography
 const { Option } = Select
 
+interface AnalyticsArticle {
+  id: number
+  article_id: number
+  title: string
+  category: string
+  view_count: number
+  like_count: number
+  comment_count: number
+  share_count: number
+  engagement_rate: number
+  trending_score: number
+  published_at?: string
+}
+
 const Analytics = () => {
   const [stats, setStats] = useState<FeedbackStats | null>(null)
-  const [articles, setArticles] = useState<Article[]>([])
+  const [articles, setArticles] = useState<AnalyticsArticle[]>([])
   const [loading, setLoading] = useState(false)
   const [timeRange, setTimeRange] = useState<number>(7)
+  const navigate = useNavigate()
 
   useEffect(() => {
     fetchData()
@@ -46,59 +62,17 @@ const Analytics = () => {
     try {
       const [statsRes, articlesRes] = await Promise.all([
         feedbackAPI.getStats(timeRange),
-        articleAPI.list({ status: 'published', page_size: 50 }),
+        feedbackAPI.listArticles({ days: timeRange, page_size: 100 }),
       ])
 
       setStats((statsRes as { data?: FeedbackStats }).data ?? null)
-      const { items } = unwrapPaginated<Article>(articlesRes)
-      
-      // 为每篇文章获取反馈数据
-      const articlesWithFeedback = await Promise.all(
-        items.map(async (article) => {
-          const fallbackViews = article.view_count || 0
-          const fallbackLikes = article.like_count || 0
-          try {
-            const feedbackRes = await feedbackAPI.getByArticle(article.id)
-            const feedback = (feedbackRes as { data?: PublicationFeedback }).data
-            return {
-              ...article,
-              view_count: feedback?.view_count ?? fallbackViews,
-              like_count: feedback?.like_count ?? fallbackLikes,
-              comment_count: feedback?.comment_count ?? 0,
-              share_count: feedback?.share_count ?? 0,
-              engagement_rate: feedback?.engagement_rate ?? 0,
-              trending_score: feedback?.trending_score ?? 0,
-            }
-          } catch (error) {
-            // 如果获取反馈数据失败，返回默认值
-            return {
-              ...article,
-              view_count: fallbackViews,
-              like_count: fallbackLikes,
-              comment_count: 0,
-              share_count: 0,
-              engagement_rate: 0,
-              trending_score: 0,
-            }
-          }
-        })
-      )
-      
-      // 按照阅读量从高到低排序
-      articlesWithFeedback.sort((a, b) => (b.view_count || 0) - (a.view_count || 0))
-      
-      setArticles(articlesWithFeedback)
+      const { items } = unwrapPaginated<AnalyticsArticle>(articlesRes)
+      setArticles(items)
     } catch (error) {
       toast.error('获取数据失败')
     } finally {
       setLoading(false)
     }
-  }
-
-  const getEngagementRateColor = (rate: number) => {
-    if (rate >= 10) return '#52c41a'
-    if (rate >= 5) return '#faad14'
-    return '#ff4d4f'
   }
 
   const columns = [
@@ -133,7 +107,21 @@ const Analytics = () => {
       dataIndex: 'title',
       key: 'title',
       ellipsis: true,
-      render: (text: string) => <Text strong>{text}</Text>,
+      render: (text: string, record: AnalyticsArticle) => (
+        <Space>
+          <a onClick={() => navigate(`/reader/article/${record.article_id || record.id}`)}>
+            <Text strong>{text}</Text>
+          </a>
+          <Button
+            type="link"
+            size="small"
+            icon={<ExportOutlined />}
+            onClick={() => navigate(`/reader/article/${record.article_id || record.id}`)}
+          >
+            查看
+          </Button>
+        </Space>
+      ),
     },
     {
       title: '阅读量',
@@ -181,20 +169,6 @@ const Analytics = () => {
           <ShareAltOutlined style={{ color: '#722ed1' }} />
           <span>{shares || 0}</span>
         </Space>
-      ),
-    },
-    {
-      title: '互动率',
-      dataIndex: 'engagement_rate',
-      key: 'engagement',
-      width: 120,
-      render: (rate: number) => (
-        <Progress
-          percent={rate || 0}
-          size="small"
-          strokeColor={getEngagementRateColor(rate || 0)}
-          format={(percent) => `${percent}%`}
-        />
       ),
     },
     {

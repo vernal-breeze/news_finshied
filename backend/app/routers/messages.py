@@ -5,10 +5,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 
 from app.database import get_db
 from app.models.message import Message
+from app.models.user import User
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/reader/messages", tags=["Messages"])
 
@@ -28,7 +30,14 @@ def _serialize_message(item: Message) -> dict:
         "read_at": item.read_at.isoformat() if item.read_at else None,
         "related_id": item.related_id,
         "related_type": item.related_type,
+        "recipient_id": item.recipient_id,
     }
+
+
+def _scoped_message_query(db: Session, current_user: User):
+    return db.query(Message).filter(
+        or_(Message.recipient_id.is_(None), Message.recipient_id == current_user.id)
+    )
 
 
 @router.get("")
@@ -36,9 +45,10 @@ async def list_messages(
     page: int = 1,
     page_size: int = 20,
     is_read: Optional[bool] = None,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    q = db.query(Message)
+    q = _scoped_message_query(db, current_user)
     if is_read is not None:
         q = q.filter(Message.is_read == is_read)
     total = q.count()
@@ -58,14 +68,21 @@ async def list_messages(
 
 
 @router.get("/unread-count")
-async def unread_count(db: Session = Depends(get_db)):
-    count = db.query(Message).filter(Message.is_read.is_(False)).count()
+async def unread_count(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    count = _scoped_message_query(db, current_user).filter(Message.is_read.is_(False)).count()
     return {"code": 200, "data": count}
 
 
 @router.put("/{message_id}/read")
-async def mark_read(message_id: int, db: Session = Depends(get_db)):
-    item = db.query(Message).filter(Message.id == message_id).first()
+async def mark_read(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = _scoped_message_query(db, current_user).filter(Message.id == message_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="消息不存在")
     item.is_read = True
@@ -76,8 +93,13 @@ async def mark_read(message_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{message_id}/reply")
-async def reply_message(message_id: int, body: ReplyMessageRequest, db: Session = Depends(get_db)):
-    original = db.query(Message).filter(Message.id == message_id).first()
+async def reply_message(
+    message_id: int,
+    body: ReplyMessageRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    original = _scoped_message_query(db, current_user).filter(Message.id == message_id).first()
     if not original:
         raise HTTPException(status_code=404, detail="消息不存在")
 
@@ -86,11 +108,12 @@ async def reply_message(message_id: int, body: ReplyMessageRequest, db: Session 
 
     reply = Message(
         content=body.content.strip(),
-        sender="reader",
+        sender=current_user.nickname or current_user.full_name or current_user.username,
         type="interaction",
         is_read=True,
         related_id=original.id,
         related_type="message",
+        recipient_id=None,
     )
     db.add(reply)
     db.commit()

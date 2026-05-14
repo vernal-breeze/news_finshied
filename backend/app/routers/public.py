@@ -12,6 +12,10 @@ from sqlalchemy import desc
 from app.database import get_db
 from app.models.article import Article
 from app.models.user import User
+from app.models.comment import Comment
+from app.models.message import Message
+from app.models.feedback import Feedback
+from app.routers.auth import get_optional_user
 
 router = APIRouter(prefix="/api/public", tags=["Public"])
 upload_router = APIRouter(prefix="/api/upload", tags=["Upload"])
@@ -52,6 +56,35 @@ def _format_article(a: Article, db: Session = None) -> dict:
     }
 
 
+def _upsert_feedback(db: Session, article: Article) -> Feedback:
+    feedback = db.query(Feedback).filter(Feedback.article_id == article.id).first()
+    if not feedback:
+        feedback = Feedback(article_id=article.id)
+        db.add(feedback)
+        db.flush()
+    feedback.view_count = max(article.view_count or 0, feedback.view_count or 0)
+    feedback.like_count = max(article.like_count or 0, feedback.like_count or 0)
+    feedback.engagement_rate = round(
+        ((feedback.like_count or 0) + (feedback.comment_count or 0) + (feedback.share_count or 0))
+        / max(feedback.view_count or 1, 1)
+        * 100,
+        2,
+    )
+    feedback.trending_score = round(
+        min(
+            100.0,
+            (feedback.view_count or 0) * 0.5
+            + (feedback.like_count or 0) * 3
+            + (feedback.comment_count or 0) * 4
+            + (feedback.share_count or 0) * 5,
+        ),
+        2,
+    )
+    article.view_count = feedback.view_count
+    article.like_count = feedback.like_count
+    return feedback
+
+
 @router.get("/articles")
 async def list_public_articles(
     page: int = 1,
@@ -82,7 +115,11 @@ async def get_public_article(article_id: int, db: Session = Depends(get_db)):
     article = db.query(Article).filter(Article.id == article_id, Article.status == "published").first()
     if not article:
         raise HTTPException(status_code=404, detail="文章不存在或未发布")
-    article.view_count = (article.view_count or 0) + 1
+    feedback = _upsert_feedback(db, article)
+    current_view = max(article.view_count or 0, feedback.view_count or 0) + 1
+    article.view_count = current_view
+    feedback.view_count = current_view
+    _upsert_feedback(db, article)
     db.commit()
     db.refresh(article)
     return {"code": 200, "data": _format_article(article, db)}
@@ -90,7 +127,25 @@ async def get_public_article(article_id: int, db: Session = Depends(get_db)):
 
 @router.get("/articles/{article_id}/comments")
 async def list_comments(article_id: int, db: Session = Depends(get_db)):
-    return {"code": 200, "data": [], "total": 0}
+    comments = (
+        db.query(Comment)
+        .filter(Comment.article_id == article_id, Comment.is_approved == True)
+        .order_by(desc(Comment.created_at))
+        .all()
+    )
+    data = [
+        {
+            "id": c.id,
+            "article_id": c.article_id,
+            "parent_id": c.parent_id,
+            "author_name": c.author,
+            "reply_to_name": c.reply_to_name,
+            "content": c.content,
+            "created_at": c.created_at.isoformat() if c.created_at else "",
+        }
+        for c in comments
+    ]
+    return {"code": 200, "data": data, "total": len(data)}
 
 
 class CommentCreate(BaseModel):
@@ -100,8 +155,65 @@ class CommentCreate(BaseModel):
 
 
 @router.post("/articles/{article_id}/comments")
-async def post_comment(article_id: int, body: CommentCreate, db: Session = Depends(get_db)):
-    return {"code": 200, "message": "评论成功", "data": {"id": 0}}
+async def post_comment(
+    article_id: int,
+    body: CommentCreate,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    article = db.query(Article).filter(Article.id == article_id).first()
+    if not article:
+        raise HTTPException(status_code=404, detail="文章不存在")
+    author_name = (
+        (current_user.nickname or current_user.full_name or current_user.username)
+        if current_user
+        else (body.author_name or "匿名")
+    )
+    # 如果是回复，获取被回复者名称
+    reply_to_name = None
+    if body.parent_id:
+        parent = db.query(Comment).filter(Comment.id == body.parent_id).first()
+        if parent:
+            reply_to_name = parent.author
+    comment = Comment(
+        article_id=article_id,
+        parent_id=body.parent_id,
+        author=author_name,
+        reply_to_name=reply_to_name,
+        content=body.content,
+    )
+    db.add(comment)
+    feedback = _upsert_feedback(db, article)
+    feedback.comment_count = (feedback.comment_count or 0) + 1
+    _upsert_feedback(db, article)
+
+    if article.author_id and (not current_user or current_user.id != article.author_id):
+        db.add(
+            Message(
+                sender=author_name,
+                type="notification",
+                recipient_id=article.author_id,
+                content=f"「{author_name}」在《{article.title}》下发表了评论：{body.content[:100]}",
+                related_type="article",
+                related_id=article.id,
+            )
+        )
+
+    db.commit()
+    db.refresh(comment)
+    return {
+        "code": 200,
+        "message": "评论成功",
+        "data": {
+            "id": comment.id,
+            "article_id": comment.article_id,
+            "parent_id": comment.parent_id,
+            "author_name": comment.author,
+            "reply_to_name": comment.reply_to_name,
+            "content": comment.content,
+            "created_at": comment.created_at.isoformat() if comment.created_at else "",
+        },
+    }
 
 
 @upload_router.post("/image")

@@ -8,6 +8,7 @@ from app.models.feedback import Feedback
 from app.models.message import Message
 from app.models.topic import Topic
 from app.models.collection import Collection
+from app.models.comment import Comment
 
 # 简单的 UserRole 别名
 class UserRole:
@@ -33,4 +34,5 @@ __all__ = [
     "Message",
     "Topic",
     "Collection",
+    "Comment",
 ]

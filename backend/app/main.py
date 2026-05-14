@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import get_settings
 from app.database import engine, Base
+from app.migrations.schema_migrations import ensure_schema_migrations
 from app.models import *  # 确保所有模型被导入以便 create_all
 from app.routers import (
     auth_router, health_router, clues_router, topics_router,
@@ -37,7 +38,7 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     """启动时创建数据库表"""
-    Base.metadata.create_all(bind=engine)
+    ensure_schema_migrations()
 
 
 @app.exception_handler(Exception)

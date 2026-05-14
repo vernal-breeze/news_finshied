@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Button, Empty, List, message, Modal, Typography, Input } from 'antd'
 import { MessageOutlined, SendOutlined } from '@ant-design/icons'
 import ReaderHeader from '../../components/reader/ReaderHeader'
@@ -10,6 +11,7 @@ const { Text, Title } = Typography
 const { TextArea } = Input
 
 const Messages: React.FC = () => {
+  const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(true)
   const [replyModalVisible, setReplyModalVisible] = useState(false)
@@ -34,16 +36,20 @@ const Messages: React.FC = () => {
     }
   }
 
-  const handleMessageClick = async (message: Message) => {
-    if (!message.is_read) {
+  const handleMessageClick = async (msg: Message) => {
+    if (!msg.is_read) {
       try {
-        await markMessageAsRead(message.id)
+        await markMessageAsRead(msg.id)
         setMessages(prev => prev.map(m => 
-          m.id === message.id ? { ...m, is_read: true } : m
+          m.id === msg.id ? { ...m, is_read: true } : m
         ))
       } catch (error) {
         console.error('标记已读失败:', error)
       }
+    }
+    // 如果关联了文章，点击跳转到文章详情
+    if (msg.related_type === 'article' && msg.related_id) {
+      navigate(`/reader/article/${msg.related_id}`)
     }
   }
 

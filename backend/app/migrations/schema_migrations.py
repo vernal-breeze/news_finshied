@@ -31,6 +31,8 @@ def _ensure_clue_columns() -> None:
             "keywords": "ALTER TABLE clues ADD COLUMN keywords TEXT",
             "news_value_score": "ALTER TABLE clues ADD COLUMN news_value_score FLOAT NOT NULL DEFAULT 0",
             "propagation_potential": "ALTER TABLE clues ADD COLUMN propagation_potential FLOAT NOT NULL DEFAULT 0",
+            "creator_id": "ALTER TABLE clues ADD COLUMN creator_id INTEGER",
+            "channel": "ALTER TABLE clues ADD COLUMN channel VARCHAR(50) DEFAULT ''",
             "processed_at": "ALTER TABLE clues ADD COLUMN processed_at DATETIME",
         },
     )
@@ -59,6 +61,7 @@ def _ensure_article_columns() -> None:
         {
             "clue_id": "ALTER TABLE articles ADD COLUMN clue_id INTEGER",
             "topic_id": "ALTER TABLE articles ADD COLUMN topic_id INTEGER",
+            "reject_reason": "ALTER TABLE articles ADD COLUMN reject_reason VARCHAR(1000) DEFAULT ''",
         },
     )
 
@@ -89,6 +92,7 @@ def _ensure_message_columns() -> None:
             "is_read": "ALTER TABLE messages ADD COLUMN is_read BOOLEAN NOT NULL DEFAULT 0",
             "related_id": "ALTER TABLE messages ADD COLUMN related_id INTEGER",
             "related_type": "ALTER TABLE messages ADD COLUMN related_type VARCHAR(20)",
+            "recipient_id": "ALTER TABLE messages ADD COLUMN recipient_id INTEGER",
             "read_at": "ALTER TABLE messages ADD COLUMN read_at DATETIME",
         },
     )

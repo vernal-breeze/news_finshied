@@ -196,7 +196,7 @@ def _get_client(model: str = "") -> LLMClient:
     if model and model in provider_registry._specs:
         model_key = model
     else:
-        model_key = LLMFactory._resolve_config_key(getattr(settings, "AI_MODEL", "deepseek-v3"))
+        model_key = LLMFactory._resolve_config_key(getattr(settings, "AI_MODEL", "deepseek-chat"))
     return LLMFactory.create(model_key)
 
 

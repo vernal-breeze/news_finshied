@@ -2,14 +2,14 @@
 import React, { useEffect, useState } from 'react'
 import {
   Card, Row, Col, Descriptions, Statistic, Avatar, Button, Form, Input,
-  Modal, Upload, message, Spin, Tabs, Typography, Divider
+  Modal, Upload, message, Spin, Typography
 } from 'antd'
 import {
   UserOutlined, EditOutlined, LockOutlined, MailOutlined,
   FileTextOutlined, CheckCircleOutlined, BulbOutlined,
-  ClockCircleOutlined, CameraOutlined, PictureOutlined
+  ClockCircleOutlined, CameraOutlined
 } from '@ant-design/icons'
-import { userAPI, uploadAPI } from '../../services/api'
+import { userAPI } from '../../services/api'
 import type { UploadFile } from 'antd/es/upload'
 import { UploadChangeParam } from 'antd/es/upload'
 import dayjs from 'dayjs'

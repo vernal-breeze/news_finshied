@@ -34,6 +34,7 @@ export function normalizeReaderArticle(a: Record<string, unknown>) {
       ? (a as { view_count: number }).view_count
       : 0,
     author: (a.author as string) || '本报记者',
+    author_id: (a.author_id as number) ?? 0,
   }
 }
 

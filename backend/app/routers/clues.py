@@ -27,6 +27,8 @@ from app.core.config import get_settings
 from app.database import get_db
 from app.models.article import Article
 from app.models.clue import Clue
+from app.models.user import User
+from app.routers.auth import get_current_user, get_optional_user
 
 settings = get_settings()
 router = APIRouter(prefix="/api/clues", tags=["Clues"])
@@ -986,6 +988,7 @@ def _serialize_clue(clue: Clue) -> dict:
         "created_at": _to_beijing(clue.created_at) if clue.created_at else "",
         "processed_at": _to_beijing(clue.processed_at) if clue.processed_at else None,
         "category": clue.category or "",
+        "creator_id": clue.creator_id,
     }
 
 
@@ -1021,15 +1024,26 @@ async def list_clues(
     page: int = 1,
     page_size: int = 20,
     status: Optional[str] = None,
+    exclude_status: Optional[str] = None,
+    creator_id: Optional[int] = None,
     search: Optional[str] = None,
     search_fields: Optional[str] = None,
     search_mode: Optional[str] = "fuzzy",
+    current_user: Optional[User] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """获取线索列表。"""
     q = db.query(Clue)
     if status:
         q = q.filter(Clue.status == status)
+    if exclude_status:
+        for es in [s.strip() for s in exclude_status.split(",") if s.strip()]:
+            q = q.filter(Clue.status != es)
+    # 投稿者只看自己的，编辑/管理员看全部
+    if creator_id is not None:
+        q = q.filter(Clue.creator_id == creator_id)
+    elif current_user and current_user.role in ("reporter", "user"):
+        q = q.filter(Clue.creator_id == current_user.id)
 
     if search:
         keywords = [k.strip() for k in search.split(",") if k.strip()]
@@ -1156,6 +1170,7 @@ async def collect_multichannel(
     keywords: str = "",
     channels: str = "",
     max_results: int = 10,
+    current_user: Optional[User] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """多渠道并发采集新闻线索。"""
@@ -1223,6 +1238,8 @@ async def collect_multichannel(
                 keywords=json.dumps(keyword_list, ensure_ascii=False),
                 status="pending",
                 news_value_score=news_score, propagation_potential=prop_score,
+                creator_id=current_user.id if current_user else None,
+                collected_by=(current_user.nickname or current_user.full_name or current_user.username) if current_user else "system",
                 category=category,
                 processed_at=datetime.now(timezone(timedelta(hours=8))),
             )
@@ -1278,12 +1295,13 @@ async def get_clue(clue_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_clue(body: ClueCreate, db: Session = Depends(get_db)):
+async def create_clue(body: ClueCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     clue = Clue(
         title=body.title, content=body.content,
         source=body.source, source_url=body.source_url,
         keywords=json.dumps(body.keywords or [], ensure_ascii=False),
         status="pending",
+        creator_id=current_user.id,
     )
     clue.news_value_score, clue.propagation_potential = _score_clue(body.title, body.content)
     db.add(clue)

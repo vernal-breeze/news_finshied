@@ -1,14 +1,16 @@
-import React, { useState, useEffect } from 'react'
-import { Card, Row, Col, Statistic, Typography, Table, Tag, Progress, Space, Button, Avatar, Badge, Drawer, Descriptions } from 'antd'
+import React, { useState, useEffect, useRef } from 'react'
+import { Card, Row, Col, Statistic, Typography, Table, Tag, Progress, Space, Button, Avatar, Badge, Drawer, Descriptions, Modal } from 'antd'
 import { 
   RobotOutlined, CheckCircleOutlined,
   CloseCircleOutlined, ThunderboltOutlined, ExclamationCircleOutlined,
-  ArrowRightOutlined, BellOutlined, EyeOutlined, GlobalOutlined
+  ArrowRightOutlined, BellOutlined, EyeOutlined, GlobalOutlined,
+  HeartOutlined, HeartFilled
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
-import { articleAPI, reviewAPI, contentAPI, unwrapPaginated } from '../../services/api'
+import { articleAPI, reviewAPI, contentAPI, feedbackAPI, unwrapPaginated } from '../../services/api'
 import { toast } from '../../components/common/Toast'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
 import './Dashboard.css'
 
 const { Title, Text, Paragraph } = Typography
@@ -33,8 +35,13 @@ interface AIQueueItem {
 const ReviewDashboard: React.FC = () => {
   const [aiQueue, setAiQueue] = useState<AIQueueItem[]>([])
   const [loading, setLoading] = useState(true)
+  const mountedRef = useRef(true)
+  const [likedArticles, setLikedArticles] = useState<Set<number>>(new Set())
   const [previewVisible, setPreviewVisible] = useState(false)
   const [selectedArticle, setSelectedArticle] = useState<AIQueueItem | null>(null)
+  const [publishModalOpen, setPublishModalOpen] = useState(false)
+  const [publishing, setPublishing] = useState(false)
+  const [publishingArticle, setPublishingArticle] = useState<AIQueueItem | null>(null)
   const [stats, setStats] = useState({
     totalToday: 0,
     aiPassed: 0,
@@ -75,60 +82,100 @@ const ReviewDashboard: React.FC = () => {
       const response = await articleAPI.list({ status: 'pending_review', page_size: 50 })
       const { items: articles } = unwrapPaginated(response)
 
-      const aiQueueData: AIQueueItem[] = await Promise.all(
-        articles.map(async (a: any) => {
-          const base = {
-            id: a.id,
-            title: a.title,
-            abstract: a.abstract || (a.content || '').slice(0, 100),
-            author: a.author || '未知',
-            category: a.category || '未分类',
-            submittedAt: a.created_at,
-            status: a.status,
-            content: a.content,
-            tags: a.tags,
-          }
-          try {
-            const r = (await contentAPI.aiReview({ article_id: a.id })) as any
-            const payload = r?.data ?? r
-            const score = typeof payload?.score === 'number' ? payload.score : 70
-            const sug = payload?.suggestion as string | undefined
-            const suggestion: AIQueueItem['aiSuggestion'] =
-              sug === '通过' || sug === '需人工复核' || sug === '不通过'
-                ? sug
-                : score >= 80
-                  ? '通过'
-                  : score >= 60
-                    ? '需人工复核'
-                    : '不通过'
-            return {
-              ...base,
-              aiScore: score,
-              aiSuggestion: suggestion,
-              aiReason: payload?.reason || '',
-              aiIssues: Array.isArray(payload?.issues) ? payload.issues : [],
-            }
-          } catch {
-            const fb = fallbackHeuristic(a)
-            return { ...base, ...fb }
-          }
-        })
-      )
-
-      setAiQueue(aiQueueData)
-      setStats({
-        totalToday: aiQueueData.length,
-        aiPassed: aiQueueData.filter(x => x.aiSuggestion === '通过').length,
-        needHumanReview: aiQueueData.filter(x => x.aiSuggestion === '需人工复核').length,
-        aiRejected: aiQueueData.filter(x => x.aiSuggestion === '不通过').length,
+      // 1) 先用本地规则秒出初始列表
+      const baseWithFallback = articles.map((a: any) => {
+        const base = {
+          id: a.id,
+          title: a.title,
+          abstract: a.abstract || (a.content || '').slice(0, 100),
+          author: a.author || '未知',
+          category: a.category || '未分类',
+          submittedAt: a.created_at,
+          status: a.status,
+          content: a.content,
+          tags: a.tags,
+        }
+        const fb = fallbackHeuristic(a)
+        return { ...base, ...fb }
       })
+      setAiQueue(baseWithFallback)
+      setStats({
+        totalToday: baseWithFallback.length,
+        aiPassed: baseWithFallback.filter(x => x.aiSuggestion === '通过').length,
+        needHumanReview: baseWithFallback.filter(x => x.aiSuggestion === '需人工复核').length,
+        aiRejected: baseWithFallback.filter(x => x.aiSuggestion === '不通过').length,
+      })
+      setLoading(false)
+
+      // 2) 后台逐批调用 AI 审核，拿到结果后替换对应条目
+      const BATCH_SIZE = 3
+      for (let i = 0; i < articles.length; i += BATCH_SIZE) {
+        if (!mountedRef.current) break  // 组件已卸载，停止请求
+        const batch = articles.slice(i, i + BATCH_SIZE)
+        const batchResults = await Promise.all(
+          batch.map(async (a: any, bi: number) => {
+            try {
+              const r = (await contentAPI.aiReview({ article_id: a.id })) as any
+              const payload = r?.data ?? r
+              const score = typeof payload?.score === 'number' ? payload.score : 70
+              const sug = payload?.suggestion as string | undefined
+              const suggestion: AIQueueItem['aiSuggestion'] =
+                sug === '通过' || sug === '需人工复核' || sug === '不通过'
+                  ? sug
+                  : score >= 80 ? '通过' : score >= 60 ? '需人工复核' : '不通过'
+              return {
+                idx: i + bi,
+                aiScore: score,
+                aiSuggestion: suggestion,
+                aiReason: payload?.reason || payload?.comment || '',
+                aiIssues: Array.isArray(payload?.issues) ? payload.issues : [],
+              }
+            } catch {
+              // AI 调用失败，保持已有 fallback 评分
+              return null
+            }
+          })
+        )
+        // 更新 state：逐条替换
+        if (!mountedRef.current) break
+        setAiQueue(prev => {
+          const next = [...prev]
+          batchResults.forEach(result => {
+            if (result !== null) {
+              next[result.idx] = {
+                ...next[result.idx],
+                aiScore: result.aiScore,
+                aiSuggestion: result.aiSuggestion,
+                aiReason: result.aiReason,
+                aiIssues: result.aiIssues,
+              }
+            }
+          })
+          return next
+        })
+        // 更新统计
+        setAiQueue(prev => {
+          setStats({
+            totalToday: prev.length,
+            aiPassed: prev.filter(x => x.aiSuggestion === '通过').length,
+            needHumanReview: prev.filter(x => x.aiSuggestion === '需人工复核').length,
+            aiRejected: prev.filter(x => x.aiSuggestion === '不通过').length,
+          })
+          return prev
+        })
+      }
     } catch (error) {
       console.error('获取AI审核队列失败:', error)
       // 使用模拟数据作为后备
       setAiQueue(getMockData())
-    } finally {
       setLoading(false)
     }
+  }
+
+  const handleLike = async (articleId: number) => {
+    setLikedArticles(prev => new Set(prev).add(articleId))
+    try { await feedbackAPI.recordLike(articleId) }
+    catch { toast.error('点赞失败') }
   }
 
   // 模拟数据
@@ -181,36 +228,42 @@ const ReviewDashboard: React.FC = () => {
 
   // 组件加载时获取数据
   useEffect(() => {
+    mountedRef.current = true
     fetchAIQueue()
+    return () => { mountedRef.current = false }
   }, [])
 
-  // 确认发布 - AI建议通过时直接发布
-  const handleConfirmPublish = async (id: number) => {
+  const openPublishModal = (article: AIQueueItem) => {
+    setPublishingArticle(article)
+    setPublishModalOpen(true)
+  }
+
+  const handleConfirmPublish = async () => {
+    if (!publishingArticle) return
+    setPublishing(true)
     try {
-      // 1. 先审核通过
       await reviewAPI.create({
-        article_id: id,
+        article_id: publishingArticle.id,
         reviewer: 'AI审核',
         level: 'first',
         result: 'approved',
         comment: 'AI自动审核通过',
       })
-      
-      // 2. 再发布
-      await articleAPI.publish(id)
-      
+
       toast.success('审核通过并已发布！')
-      // 从列表中移除
-      setAiQueue(prev => prev.filter(item => item.id !== id))
-      // 更新统计
-      setStats(prev => ({
-        ...prev,
-        aiPassed: prev.aiPassed - 1,
-      }))
+      setPublishModalOpen(false)
+      setPublishingArticle(null)
+      if (selectedArticle?.id === publishingArticle.id) {
+        setPreviewVisible(false)
+        setSelectedArticle(null)
+      }
+      await fetchAIQueue()
     } catch (error: any) {
       console.error('发布失败:', error)
       const errMsg = error?.response?.data?.message?.message || error?.message || '发布失败'
       toast.error(errMsg)
+    } finally {
+      setPublishing(false)
     }
   }
 
@@ -307,6 +360,12 @@ const ReviewDashboard: React.FC = () => {
       render: (_, record) => (
         <Space>
           <Button 
+            type="text"
+            size="small"
+            icon={likedArticles.has(record.id) ? <HeartFilled style={{ color: '#ff4d4f' }} /> : <HeartOutlined />}
+            onClick={() => handleLike(record.id)}
+          />
+          <Button 
             type="link" 
             size="small"
             icon={<EyeOutlined />}
@@ -325,7 +384,7 @@ const ReviewDashboard: React.FC = () => {
             </Button>
           )}
           {record.aiSuggestion === '通过' && (
-            <Button type="primary" size="small" onClick={() => handleConfirmPublish(record.id)}>
+            <Button type="primary" size="small" onClick={() => openPublishModal(record)}>
               确认发布
             </Button>
           )}
@@ -503,12 +562,45 @@ const ReviewDashboard: React.FC = () => {
                 background: '#f5f5f5',
                 borderRadius: 4
               }}>
-                {selectedArticle.content || selectedArticle.abstract || '暂无内容'}
+                <MarkdownRenderer
+                  content={selectedArticle.content || selectedArticle.abstract}
+                  style={{ maxHeight: 400, overflow: 'auto', padding: 12, background: '#f5f5f5', borderRadius: 4 }}
+                />
               </div>
             </Typography>
           </div>
         )}
       </Drawer>
+
+      <Modal
+        title="确认发布"
+        open={publishModalOpen}
+        onOk={handleConfirmPublish}
+        onCancel={() => {
+          if (publishing) return
+          setPublishModalOpen(false)
+          setPublishingArticle(null)
+        }}
+        confirmLoading={publishing}
+        okText="确认发布"
+        cancelText="取消"
+      >
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Text>确认将该稿件作为 AI 审核通过结果直接发布吗？</Text>
+          {publishingArticle && (
+            <Card size="small" style={{ background: '#fafafa' }}>
+              <Space direction="vertical" size={4}>
+                <Text strong>{publishingArticle.title}</Text>
+                <Space>
+                  <Tag color="blue">{publishingArticle.category}</Tag>
+                  <Text type="secondary">{publishingArticle.author}</Text>
+                </Space>
+                <Text type="secondary">AI 评分：{publishingArticle.aiScore}</Text>
+              </Space>
+            </Card>
+          )}
+        </Space>
+      </Modal>
     </div>
   )
 }

@@ -1,17 +1,17 @@
 /** 系统设置 - 审核端（管理员/主编可编辑） */
 import React, { useEffect, useState } from 'react'
 import {
-  Card, Form, Input, Button, Switch, Space, Typography, Divider,
-  Spin, Tag, message, InputNumber, Tabs
+  Card, Form, Input, Button, Switch, Typography,
+  Spin, Tag, message, InputNumber
 } from 'antd'
 import {
-  SaveOutlined, SettingOutlined, LockOutlined, KeyOutlined,
-  SafetyOutlined, MailOutlined
+  SaveOutlined, SettingOutlined, LockOutlined,
+  SafetyOutlined
 } from '@ant-design/icons'
 import { settingsAPI } from '../../services/api'
 import './Settings.css'
 
-const { Title, Text, Paragraph } = Typography
+const { Title, Text } = Typography
 
 interface SystemSettings {
   site_name: string

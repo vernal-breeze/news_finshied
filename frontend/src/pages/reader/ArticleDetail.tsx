@@ -15,6 +15,7 @@ import { normalizeReaderArticle } from '../../services/readerApi'
 import { useAuthSnapshot } from '../../hooks/useAuthSnapshot'
 import ReaderHeader from '../../components/reader/ReaderHeader'
 import { toast } from '../../components/common/Toast'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
 import './ArticleDetail.css'
 
 const { Title, Text, Paragraph } = Typography
@@ -31,6 +32,7 @@ interface Article {
   view_count: number
   like_count: number
   author: string
+  author_id: number
   author_avatar: string
 }
 
@@ -68,7 +70,10 @@ const ReaderArticleDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>()
   const [article, setArticle] = useState<Article | null>(null)
   const [loading, setLoading] = useState(true)
-  const [fontSize, setFontSize] = useState<'small' | 'medium' | 'large'>('medium')
+  const [fontSize, setFontSize] = useState<'small' | 'medium' | 'large'>(() => {
+    const saved = localStorage.getItem('reader-font-size')
+    return (saved === 'small' || saved === 'medium' || saved === 'large') ? saved : 'medium'
+  })
   const [liked, setLiked] = useState(false)
   const [comments, setComments] = useState<ReaderComment[]>([])
   const [commentText, setCommentText] = useState('')
@@ -97,6 +102,11 @@ const ReaderArticleDetail: React.FC = () => {
     }
   }, [article?.id])
 
+  // 记住字体大小选择
+  useEffect(() => {
+    localStorage.setItem('reader-font-size', fontSize)
+  }, [fontSize])
+
   const fetchArticle = async () => {
     setLoading(true)
     try {
@@ -110,14 +120,6 @@ const ReaderArticleDetail: React.FC = () => {
           content: String(raw.content ?? ''),
           cover_image: norm.cover_image,
         } as Article)
-        // 记录阅读量
-        try {
-          await feedbackAPI.recordView(Number(id))
-          // 更新本地阅读量
-          setArticle(prev => prev ? { ...prev, view_count: (prev.view_count || 0) + 1 } : null)
-        } catch (error) {
-          console.error('记录阅读量失败:', error)
-        }
       } else {
         setArticle(null)
       }
@@ -126,6 +128,7 @@ const ReaderArticleDetail: React.FC = () => {
       setArticle({
         id: Number(id) || 1,
         title: '我国新能源汽车销量突破1000万辆，引领全球绿色转型',
+        author_id: 0,
         content: `最新数据显示，2024年我国新能源汽车销量持续攀升，全年突破1000万辆大关，渗透率超过40%，在全球市场中占据领先地位。这一里程碑式的成就标志着我国新能源汽车产业已进入全新发展阶段。
 
 一、市场现状
@@ -166,6 +169,12 @@ const ReaderArticleDetail: React.FC = () => {
   const handleLike = async () => {
     if (liked) {
       toast.info('您已经点过赞了')
+      return
+    }
+    // 检查是否自己在给自己点赞
+    const currentUserId = (loggedUser as { id?: number } | null)?.id
+    if (currentUserId && article?.author_id && currentUserId === article.author_id) {
+      toast.info('自己无法给自己的帖子点赞')
       return
     }
     try {
@@ -344,31 +353,11 @@ const ReaderArticleDetail: React.FC = () => {
           </Card>
 
           {/* 正文（支持单独成段的 ![](url) Markdown 图片） */}
-          <div 
-            className="article-content"
-            style={{ fontSize: fontSizeMap[fontSize] }}
-          >
-            {(article.content || '').split('\n\n').map((paragraph, index) => {
-              const t = paragraph.trim()
-              const mdImg = t.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/)
-              if (mdImg) {
-                const src = mdImg[2]
-                return (
-                  <div key={index} className="article-figure" style={{ margin: '20px 0', textAlign: 'center' }}>
-                    <img
-                      src={src}
-                      alt={mdImg[1] || '配图'}
-                      style={{ maxWidth: '100%', height: 'auto', borderRadius: 8 }}
-                    />
-                  </div>
-                )
-              }
-              return (
-                <Paragraph key={index} className="article-paragraph">
-                  {paragraph}
-                </Paragraph>
-              )
-            })}
+          <div className="article-content" style={{ fontSize: fontSizeMap[fontSize] }}>
+            <MarkdownRenderer
+              content={article.content}
+              style={{ lineHeight: 2.0 }}
+            />
           </div>
 
           {/* 字体大小调节 */}

@@ -208,6 +208,7 @@ export const articleAPI = {
   update: (id: number, data: any) => api.put(`/api/articles/${id}`, data),
   delete: (id: number) => api.delete(`/api/articles/${id}`),
   publish: (id: number) => api.post(`/api/articles/${id}/publish`),
+  unpublish: (id: number, reason: string) => api.post(`/api/articles/${id}/unpublish`, { reason }),
   submitForReview: (id: number) => api.post(`/api/articles/${id}/submit-review`),
   reviews: (id: number) => api.get(`/api/articles/${id}/reviews`),
 }
@@ -246,6 +247,7 @@ export const reviewAPI = {
 export const feedbackAPI = {
   getStats: (days?: number) => api.get('/api/feedback/stats', { params: { days } }),
   getTrends: (days?: number) => api.get('/api/feedback/trends', { params: { days } }),
+  listArticles: (params?: any) => api.get('/api/feedback/articles', { params }),
   getByArticle: (articleId: number) => api.get(`/api/feedback/${articleId}`),
   recordView: (articleId: number) => api.post(`/api/feedback/${articleId}/view`),
   recordLike: (articleId: number) => api.post(`/api/feedback/${articleId}/like`),

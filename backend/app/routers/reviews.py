@@ -40,7 +40,7 @@ def _resolve_review_status(result: Optional[str], status: Optional[str]) -> str:
 
 def _status_to_article_status(review_status: str) -> str:
     mapping = {
-        "approved": "approved",
+        "approved": "published",   # 审核通过直接发布
         "rejected": "rejected",
         "need_revision": "draft",
         "pending": "reviewing",

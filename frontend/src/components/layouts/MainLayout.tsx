@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Layout, Menu, theme, Typography, Badge, Tooltip, Dropdown } from 'antd'
 
 interface Notification {
@@ -7,6 +7,8 @@ interface Notification {
   content: string
   time: string
   read: boolean
+  related_id?: number
+  related_type?: string
 }
 import { toast } from '../common/Toast'
 import { useNavigate, useLocation } from 'react-router-dom'
@@ -30,6 +32,7 @@ import {
   FlagOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
+import { fetchMessages, fetchUnreadMessageCount, markMessageAsRead } from '../../services/readerApi'
 
 const { Header, Sider, Content } = Layout
 const { Title, Text } = Typography
@@ -140,6 +143,47 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     },
   ]
 
+  useEffect(() => {
+    let mounted = true
+    const loadNotifications = async () => {
+      try {
+        const [count, items] = await Promise.all([
+          fetchUnreadMessageCount(),
+          fetchMessages({ page: 1, page_size: 5 }),
+        ])
+        if (!mounted) return
+        const normalized = (items as Array<any>).map((item) => ({
+          id: item.id,
+          title: item.type === 'notification' ? '通知消息' : item.type === 'interaction' ? '互动消息' : '系统消息',
+          content: item.content,
+          time: item.created_at,
+          read: Boolean(item.is_read),
+          related_id: item.related_id,
+          related_type: item.related_type,
+        }))
+        const unreadIds = new Set(
+          normalized.filter((item) => !item.read).map((item) => item.id)
+        )
+        const forcedUnread = normalized.map((item, index) => ({
+          ...item,
+          read: count > 0 ? !unreadIds.has(item.id) : index >= count,
+        }))
+        setNotifications(forcedUnread)
+      } catch {
+        if (mounted) setNotifications([])
+      }
+    }
+
+    loadNotifications()
+    window.addEventListener('auth-changed', loadNotifications)
+    window.addEventListener('focus', loadNotifications)
+    return () => {
+      mounted = false
+      window.removeEventListener('auth-changed', loadNotifications)
+      window.removeEventListener('focus', loadNotifications)
+    }
+  }, [])
+
   const notificationItems: MenuProps['items'] = [
     ...notifications.map(n => ({
       key: `notif-${n.id}`,
@@ -156,14 +200,29 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       key: 'mark-all-read',
       label: <div style={{ textAlign: 'center', color: 'var(--app-primary)' }}>全部标为已读</div>,
     },
+    {
+      key: 'open-messages',
+      label: <div style={{ textAlign: 'center', color: 'var(--app-primary)' }}>进入消息中心</div>,
+    },
   ]
 
-  const handleNotificationClick = ({ key }: { key: string }) => {
+  const handleNotificationClick = async ({ key }: { key: string }) => {
     if (key === 'mark-all-read') {
+      const unread = notifications.filter((n) => !n.read)
+      await Promise.all(unread.map((item) => markMessageAsRead(item.id).catch(() => undefined)))
       setNotifications(prev => prev.map(n => ({ ...n, read: true })))
+    } else if (key === 'open-messages') {
+      navigate('/reader/messages')
     } else if (key.startsWith('notif-')) {
       const id = parseInt(key.replace('notif-', ''))
+      await markMessageAsRead(id).catch(() => undefined)
+      const target = notifications.find((n) => n.id === id)
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n))
+      if (target?.related_type === 'article' && target.related_id) {
+        navigate(`/reader/article/${target.related_id}`)
+      } else {
+        navigate('/reader/messages')
+      }
     }
   }
 

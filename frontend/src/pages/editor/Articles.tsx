@@ -48,8 +48,9 @@ import {
   CopyOutlined,
   PictureOutlined,
   CloseCircleOutlined,
+  ExportOutlined,
 } from '@ant-design/icons'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useParams, useNavigate } from 'react-router-dom'
 import { articleAPI, topicAPI, unwrapPaginated, uploadAPI } from '../../services/api'
 import type { Article, TopicPlanning } from '../../types'
 import { toast } from '../../components/common/Toast'
@@ -79,7 +80,9 @@ const { TextArea } = Input
 
 
 const Articles = () => {
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const { id: urlId } = useParams<{ id: string }>()
   const [articles, setArticles] = useState<Article[]>([])
   const [loading, setLoading] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
@@ -119,6 +122,28 @@ const Articles = () => {
     fetchArticles()
     fetchTopicOptions() // 组件加载时获取选题列表
   }, [fetchArticles])
+
+  // 通过 URL /editor/articles/:id 打开稿件详情
+  useEffect(() => {
+    const numericId = urlId ? parseInt(urlId, 10) : null
+    if (!numericId || isNaN(numericId)) return
+    // 先从已加载列表中查找
+    const existing = articles.find(a => a.id === numericId)
+    if (existing) {
+      handleViewDetail(existing)
+      return
+    }
+    // 列表中找不到，从 API 加载
+    articleAPI.get(numericId).then((res: any) => {
+      const article = (res as any).data || res
+      if (article?.id) {
+        handleViewDetail(article)
+      }
+    }).catch(() => {
+      toast.error('稿件不存在')
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlId])
 
   useEffect(() => {
     const status = searchParams.get('status')
@@ -269,6 +294,16 @@ const Articles = () => {
     }
   }
 
+  const handleOpenReaderArticle = (id: number) => {
+    navigate(`/reader/article/${id}`)
+  }
+
+  const isReturnedForRevision = (article: Article) =>
+    article.status === 'pending_review' && Boolean(article.reject_reason)
+
+  const canSubmitForReview = (article: Article) =>
+    article.status === 'draft' || article.status === 'rejected' || isReturnedForRevision(article)
+
   const handleViewDetail = async (record: Article) => {
     setSelectedArticle(record)
     setDetailVisible(true)
@@ -394,7 +429,13 @@ const Articles = () => {
                 display: 'inline-block',
                 cursor: 'pointer'
               }}
-              onClick={() => handleViewDetail(record)}
+              onClick={() => {
+                if (record.status === 'published') {
+                  handleOpenReaderArticle(record.id)
+                  return
+                }
+                handleViewDetail(record)
+              }}
             >
               {text}
             </Text>
@@ -462,7 +503,14 @@ const Articles = () => {
       dataIndex: 'status',
       key: 'status',
       width: 100,
-      render: (status: string) => getStatusTag(status),
+      render: (status: string, record: any) =>
+        record.reject_reason ? (
+          <Tooltip title={`退回原因：${record.reject_reason}`}>
+            {getStatusTag(status)}
+          </Tooltip>
+        ) : (
+          getStatusTag(status)
+        ),
       filters: [
         { text: '草稿', value: 'draft' },
         { text: '待审核', value: 'pending_review' },
@@ -494,12 +542,22 @@ const Articles = () => {
       render: (_: any, record: Article) => (
         <Space size="small">
           <Tooltip title="查看详情">
-            <Button type="text" icon={<EyeOutlined />} onClick={() => handleViewDetail(record)} />
+            <Button
+              type="text"
+              icon={record.status === 'published' ? <ExportOutlined /> : <EyeOutlined />}
+              onClick={() => {
+                if (record.status === 'published') {
+                  handleOpenReaderArticle(record.id)
+                  return
+                }
+                handleViewDetail(record)
+              }}
+            />
           </Tooltip>
           <Tooltip title="编辑">
             <Button type="text" icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           </Tooltip>
-          {(record.status === 'draft' || record.status === 'rejected') && (
+          {canSubmitForReview(record) && (
             <Tooltip title="提交审核">
               <Button
                 type="text"
@@ -796,7 +854,7 @@ const Articles = () => {
                 actions={[
                   <Button type="text" icon={<EyeOutlined />} onClick={() => handleViewDetail(article)} />,
                   <Button type="text" icon={<EditOutlined />} onClick={() => handleEdit(article)} />,
-                  (article.status === 'draft' || article.status === 'rejected') && (
+                  canSubmitForReview(article) && (
                     <Tooltip title="提交审核后，审核员可在审核端看到">
                       <Button
                         type="text"
@@ -1050,11 +1108,10 @@ const Articles = () => {
         open={detailVisible}
         extra={
           selectedArticle &&
-          (selectedArticle.status === 'draft' ||
-            selectedArticle.status === 'rejected' ||
+          (canSubmitForReview(selectedArticle) ||
             selectedArticle.status === 'approved') && (
             <Space>
-              {(selectedArticle.status === 'draft' || selectedArticle.status === 'rejected') && (
+              {canSubmitForReview(selectedArticle) && (
                 <>
                   <Button
                     type="primary"
@@ -1100,6 +1157,11 @@ const Articles = () => {
                       </Descriptions.Item>
                       <Descriptions.Item label="作者">{selectedArticle.author || '-'}</Descriptions.Item>
                       <Descriptions.Item label="分类">{getCategoryTag(selectedArticle.category) || '-'}</Descriptions.Item>
+                      {selectedArticle.clue_id && (
+                        <Descriptions.Item label="来源线索">
+                          <Tag color="purple">{selectedArticle.clue_title || `线索 #${selectedArticle.clue_id}`}</Tag>
+                        </Descriptions.Item>
+                      )}
                       <Descriptions.Item label="关联选题">
                         {selectedArticle.topic_id ? (
                           <>
@@ -1127,6 +1189,11 @@ const Articles = () => {
                         )}
                       </Descriptions.Item>
                       <Descriptions.Item label="状态">{getStatusTag(selectedArticle.status)}</Descriptions.Item>
+                      {selectedArticle.reject_reason && (
+                        <Descriptions.Item label="退回原因" span={2}>
+                          <Text type="danger" style={{ whiteSpace: 'pre-wrap' }}>{selectedArticle.reject_reason}</Text>
+                        </Descriptions.Item>
+                      )}
                       <Descriptions.Item label="版本">v{selectedArticle.version}</Descriptions.Item>
                       <Descriptions.Item label="创建时间">
                         {new Date(selectedArticle.created_at).toLocaleString('zh-CN')}

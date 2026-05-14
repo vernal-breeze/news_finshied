@@ -10,7 +10,7 @@ LLM 统一调用模块 — 工厂模式 + Provider 注册表
 使用示例:
     from app.services.llm import LLMFactory
 
-    client = LLMFactory.create("deepseek-v3")
+    client = LLMFactory.create("deepseek-chat")
     reply = client.chat("你好")
     async for chunk in client.stream_chat("写一篇新闻"):
         print(chunk, end="")
@@ -333,6 +333,22 @@ class BaseLLMProvider(ABC):
 # 内置 Provider 实现
 # ===================================================================
 
+class DeepSeekProvider(BaseLLMProvider):
+    """DeepSeek 官方 API（OpenAI 兼容协议）。"""
+
+    def _resolve_api_key(self) -> Optional[str]:
+        settings = get_settings()
+        return settings.DEEPSEEK_API_KEY or settings.SILICONFLOW_API_KEY or settings.OPENAI_API_KEY
+
+    def _build_client(self, api_key: str) -> OpenAI:
+        settings = get_settings()
+        return OpenAI(
+            api_key=api_key,
+            base_url=getattr(settings, "DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            timeout=getattr(settings, "AI_TIMEOUT", 60),
+        )
+
+
 class SiliconFlowProvider(BaseLLMProvider):
     """SiliconFlow（OpenAI 兼容协议）。"""
 
@@ -499,7 +515,7 @@ class ProviderRegistry:
         """注册一个模型。
 
         Args:
-            key: 模型别名（如 "deepseek-v3"）
+            key: 模型别名（如 "deepseek-chat"）
             spec: Provider 规格
             provider_cls: Provider 实现类
             override: 是否覆盖已有注册
@@ -565,7 +581,33 @@ def _register_defaults() -> None:
     sf_base = getattr(settings, "SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
 
     defaults: Dict[str, Tuple[ProviderSpec, Type[BaseLLMProvider]]] = {
-        # ---- DeepSeek 系列（via SiliconFlow）----
+        # ---- DeepSeek 官方 API（主 Provider）----
+        "deepseek-chat": (
+            ProviderSpec(
+                provider="deepseek",
+                model_id="deepseek-chat",
+                base_url=settings.DEEPSEEK_BASE_URL,
+                api_key_env="DEEPSEEK_API_KEY,SILICONFLOW_API_KEY,OPENAI_API_KEY",
+                max_tokens=8192,
+                temperature_range=(0.0, 1.5),
+                tags=["general", "fast", "chinese"],
+            ),
+            DeepSeekProvider,
+        ),
+        "deepseek-reasoner": (
+            ProviderSpec(
+                provider="deepseek",
+                model_id="deepseek-reasoner",
+                base_url=settings.DEEPSEEK_BASE_URL,
+                api_key_env="DEEPSEEK_API_KEY,SILICONFLOW_API_KEY,OPENAI_API_KEY",
+                max_tokens=8192,
+                temperature_range=(0.0, 1.5),
+                tags=["reasoning", "chinese"],
+                thinking_model=True,
+            ),
+            DeepSeekProvider,
+        ),
+        # ---- DeepSeek 系列（via SiliconFlow，备用）----
         "deepseek-v3": (
             ProviderSpec(
                 provider="siliconflow",
@@ -685,7 +727,7 @@ _register_defaults()
 # ===================================================================
 
 FALLBACK_MAP: Dict[str, str] = {
-    "deepseek-r1": "deepseek-v3",
+    "deepseek-reasoner": "deepseek-chat",
     "qwen-plus": "qwen-max",
     "gpt-4o": "gpt-4o-mini",
     "kimi": "ollama-qwen",
@@ -700,12 +742,12 @@ class LLMFactory:
     """LLM 工厂 — 创建配置好的 LLM 客户端。
 
     用法:
-        client = LLMFactory.create("deepseek-v3")
+        client = LLMFactory.create("deepseek-chat")
         # 或使用默认模型
         client = LLMFactory.create()
     """
 
-    DEFAULT_KEY = "deepseek-v3"
+    DEFAULT_KEY = "deepseek-chat"
 
     # ---- 创建 ----
 
@@ -731,8 +773,10 @@ class LLMFactory:
             return raw
         # 别名映射
         aliases = {
-            "deepseek-ai/DeepSeek-V3": "deepseek-v3",
-            "deepseek-ai/DeepSeek-R1": "deepseek-r1",
+            "deepseek-chat": "deepseek-chat",
+            "deepseek-reasoner": "deepseek-reasoner",
+            "deepseek-ai/DeepSeek-V3": "deepseek-chat",
+            "deepseek-ai/DeepSeek-R1": "deepseek-reasoner",
             "Qwen/Qwen2.5-72B-Instruct": "qwen-plus",
             "Qwen/Qwen2.5-7B-Instruct": "qwen-plus",
             "gpt-4o": "gpt-4o",

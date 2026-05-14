@@ -306,9 +306,18 @@ const Clues = () => {
         clue_id: clue.id,
       })
       toast.success('稿件创建成功！可前往稿件管理页面查看')
+      await fetchClues()
     } catch (error) {
       toast.error('创建稿件失败')
     }
+  }
+
+  const refreshAfterCollection = async () => {
+    if (currentPage !== 1) {
+      setCurrentPage(1)
+      return
+    }
+    await fetchClues()
   }
 
   const handleCollect = async (values: any) => {
@@ -328,10 +337,8 @@ const Clues = () => {
       const fetched = data?.fetched || 0
       const message = result?.message || ''
       const errors = data?.errors || []
-      const sources = data?.sources || []
-
       if (created > 0) {
-        await fetchClues()
+        await refreshAfterCollection()
         toast.success(message || `✅ 成功采集 ${created} 条线索`)
         setCollectModalVisible(false)
         collectForm.resetFields()
@@ -344,7 +351,7 @@ const Clues = () => {
         }
       } else if (fetched > 0) {
         toast.warning('⚠️ 采集到内容但均为重复线索')
-        await fetchClues()
+        await refreshAfterCollection()
       } else {
         if (result?.code === 202 || errors.length > 0) {
           toast.error(message || '❌ 未采集到有效线索', 6000)
@@ -359,7 +366,7 @@ const Clues = () => {
         } else {
           toast.warning(message || '未获取到新线索，可能已存在或网络问题')
         }
-        await fetchClues()  // 刷新列表以显示现有数据
+        await refreshAfterCollection()  // 刷新列表以显示现有数据
       }
     } catch (error: unknown) {
       console.error('❌ 采集请求失败:', error)
@@ -379,6 +386,7 @@ const Clues = () => {
     const config: Record<string, { color: string; text: string }> = {
       pending: { color: 'orange', text: '待处理' },
       processed: { color: 'green', text: '已处理' },
+      converted: { color: 'blue', text: '已转稿' },
       archived: { color: 'default', text: '已归档' },
     }
     const item = config[status] || config.pending
@@ -470,6 +478,7 @@ const Clues = () => {
         const items: MenuProps['items'] = [
           { key: 'pending', label: '待处理' },
           { key: 'processed', label: '已处理' },
+          { key: 'converted', label: '已转稿' },
           { key: 'archived', label: '已归档' },
         ]
         return (
@@ -610,6 +619,7 @@ const Clues = () => {
           <Select size="small" placeholder="状态" allowClear style={{ width: 100 }} value={statusFilter} onChange={setStatusFilter}>
             <Option value="pending">待处理</Option>
             <Option value="processed">已处理</Option>
+            <Option value="converted">已转稿</Option>
             <Option value="archived">已归档</Option>
           </Select>
           <Select size="small" placeholder="分类" allowClear style={{ width: 90 }} value={categoryFilter} onChange={setCategoryFilter}>
@@ -628,7 +638,7 @@ const Clues = () => {
               {searchText && <Tag closable onClose={() => setSearchText('')}>{searchText}</Tag>}
               {searchFields.length > 0 && <Tag closable onClose={() => setSearchFields([])}>范围: {searchFields.join(',')}</Tag>}
               {searchMode !== 'fuzzy' && <Tag closable onClose={() => setSearchMode('fuzzy')}>{searchMode === 'exact' ? '精确匹配' : '智能排序'}</Tag>}
-              {statusFilter && <Tag closable onClose={() => setStatusFilter(undefined)}>{statusFilter === 'pending' ? '待处理' : statusFilter === 'processed' ? '已处理' : '已归档'}</Tag>}
+              {statusFilter && <Tag closable onClose={() => setStatusFilter(undefined)}>{statusFilter === 'pending' ? '待处理' : statusFilter === 'processed' ? '已处理' : statusFilter === 'converted' ? '已转稿' : '已归档'}</Tag>}
               {categoryFilter && <Tag closable onClose={() => setCategoryFilter(undefined)}>{categoryFilter}</Tag>}
             </Space>}
             type="info" style={{ marginBottom: 12, borderRadius: 8 }} showIcon={false}
@@ -703,6 +713,7 @@ const Clues = () => {
                 <Select placeholder="选择状态">
                   <Option value="pending">待处理</Option>
                   <Option value="processed">已处理</Option>
+                  <Option value="converted">已转稿</Option>
                   <Option value="archived">已归档</Option>
                 </Select>
               </Form.Item>

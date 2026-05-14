@@ -22,6 +22,8 @@ class Clue(Base):
 
     # 收集由
     collected_by = Column(String(50), default="system")
+    # 创建者（投稿端按用户隔离）
+    creator_id = Column(Integer, nullable=True, index=True)
 
     # 新闻分类（如：科技、经济、社会等）
     category = Column(String(50), default="")
