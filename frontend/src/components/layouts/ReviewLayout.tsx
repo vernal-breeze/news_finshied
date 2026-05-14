@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Layout, Menu, Avatar, Dropdown, Badge, Space, Typography, Button, Tooltip } from 'antd'
 import { toast } from '../common/Toast'
 import { 
@@ -7,6 +7,8 @@ import {
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 import dayjs from 'dayjs'
+import type { MenuProps } from 'antd'
+import { fetchMessages, fetchUnreadMessageCount, markMessageAsRead } from '../../services/readerApi'
 import './ReviewLayout.css'
 
 const { Header, Sider, Content } = Layout
@@ -17,16 +19,16 @@ interface Notification {
   title: string
   content: string
   time: string
-  type: 'review' | 'article' | 'system'
   read: boolean
+  related_id?: number
+  related_type?: string
 }
 
 const ReviewLayout: React.FC = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const [notifications, setNotifications] = useState<Notification[]>([])
-
-  const unreadCount = notifications.filter(n => !n.read).length
+  const [unreadCount, setUnreadCount] = useState(0)
 
   const user = JSON.parse(localStorage.getItem('user') || '{}')
 
@@ -53,7 +55,48 @@ const ReviewLayout: React.FC = () => {
     },
   ]
 
-  const notificationItems = [
+  useEffect(() => {
+    let mounted = true
+
+    const loadNotifications = async () => {
+      try {
+        const [count, items] = await Promise.all([
+          fetchUnreadMessageCount(),
+          fetchMessages({ page: 1, page_size: 5 }),
+        ])
+        if (!mounted) return
+
+        setUnreadCount(count)
+        setNotifications(
+          (items as Array<any>).map((item) => ({
+            id: item.id,
+            title: item.type === 'notification' ? '审核通知' : item.type === 'interaction' ? '互动消息' : '系统消息',
+            content: item.content,
+            time: item.created_at,
+            read: Boolean(item.is_read),
+            related_id: item.related_id,
+            related_type: item.related_type,
+          }))
+        )
+      } catch {
+        if (!mounted) return
+        setUnreadCount(0)
+        setNotifications([])
+      }
+    }
+
+    loadNotifications()
+    window.addEventListener('auth-changed', loadNotifications)
+    window.addEventListener('focus', loadNotifications)
+
+    return () => {
+      mounted = false
+      window.removeEventListener('auth-changed', loadNotifications)
+      window.removeEventListener('focus', loadNotifications)
+    }
+  }, [])
+
+  const notificationItems: MenuProps['items'] = [
     ...notifications.map(n => ({
       key: `notification-${n.id}`,
       label: (
@@ -74,10 +117,23 @@ const ReviewLayout: React.FC = () => {
         </div>
       ),
     })),
+    ...(
+      notifications.length
+        ? [{ type: 'divider' as const }]
+        : [{
+            key: 'empty',
+            disabled: true,
+            label: <div style={{ padding: '8px 0', color: '#999', textAlign: 'center' }}>暂无通知</div>,
+          }]
+    ),
     { type: 'divider' as const },
     {
       key: 'mark-all-read',
       label: <div style={{ textAlign: 'center', color: 'var(--app-primary)' }}>全部标为已读</div>,
+    },
+    {
+      key: 'open-review-queue',
+      label: <div style={{ textAlign: 'center', color: 'var(--app-primary)' }}>查看审核队列</div>,
     },
   ]
 
@@ -95,15 +151,28 @@ const ReviewLayout: React.FC = () => {
     },
   ]
 
-  const handleNotificationClick = ({ key }: { key: string }) => {
+  const handleNotificationClick = async ({ key }: { key: string }) => {
     if (key === 'mark-all-read') {
+      const unread = notifications.filter((n) => !n.read)
+      await Promise.all(unread.map((item) => markMessageAsRead(item.id).catch(() => undefined)))
+      setUnreadCount(0)
       setNotifications(prev => prev.map(n => ({ ...n, read: true })))
       toast.success('已全部标为已读')
+    } else if (key === 'open-review-queue') {
+      navigate('/review/queue')
     } else if (key.startsWith('notification-')) {
       const id = parseInt(key.replace('notification-', ''))
-      setNotifications(prev => prev.map(n => 
+      await markMessageAsRead(id).catch(() => undefined)
+      const target = notifications.find((n) => n.id === id)
+      if (target && !target.read) {
+        setUnreadCount((prev) => Math.max(prev - 1, 0))
+      }
+      setNotifications(prev => prev.map(n =>
         n.id === id ? { ...n, read: true } : n
       ))
+      if (target?.related_type === 'article' && target.related_id) {
+        navigate('/review/queue')
+      }
     }
   }
 

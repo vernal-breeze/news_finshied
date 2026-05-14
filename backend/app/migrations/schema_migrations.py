@@ -4,7 +4,7 @@
 """
 from sqlalchemy import inspect, text
 
-from app.database import engine, Base
+from app.database import engine, Base, SessionLocal
 from app.core.logging_config import get_logger
 
 
@@ -98,6 +98,80 @@ def _ensure_message_columns() -> None:
     )
 
 
+def _backfill_message_recipients() -> None:
+    """尽量为历史消息补齐 recipient_id，避免消息中心串号。"""
+    inspector = inspect(engine)
+    if "messages" not in inspector.get_table_names():
+        return
+
+    message_columns = {column["name"] for column in inspector.get_columns("messages")}
+    if "recipient_id" not in message_columns:
+        return
+
+    from app.models.article import Article
+    from app.models.message import Message
+    from app.models.user import User
+
+    db = SessionLocal()
+    try:
+        pending_messages = db.query(Message).filter(Message.recipient_id.is_(None)).all()
+        if not pending_messages:
+            return
+
+        article_ids = [msg.related_id for msg in pending_messages if msg.related_type == "article" and msg.related_id]
+        message_ids = [msg.related_id for msg in pending_messages if msg.related_type == "message" and msg.related_id]
+
+        article_author_map = {
+            article.id: article.author_id
+            for article in db.query(Article).filter(Article.id.in_(article_ids)).all()
+            if article.author_id
+        } if article_ids else {}
+
+        related_message_map = {
+            item.id: item
+            for item in db.query(Message).filter(Message.id.in_(message_ids)).all()
+        } if message_ids else {}
+
+        user_name_map: dict[str, int] = {}
+        for user in db.query(User).all():
+            for name in (user.username, user.nickname, user.full_name):
+                normalized = (name or "").strip()
+                if normalized and normalized not in user_name_map:
+                    user_name_map[normalized] = user.id
+
+        updated = 0
+        for msg in pending_messages:
+            inferred_recipient_id = None
+
+            if msg.related_type == "article" and msg.related_id:
+                inferred_recipient_id = article_author_map.get(msg.related_id)
+
+            if inferred_recipient_id is None and msg.related_type == "message" and msg.related_id:
+                original = related_message_map.get(msg.related_id)
+                if original and original.recipient_id:
+                    inferred_recipient_id = original.recipient_id
+
+            if inferred_recipient_id is None:
+                sender = (msg.sender or "").strip()
+                if sender and sender.lower() != "system":
+                    inferred_recipient_id = user_name_map.get(sender)
+
+            if inferred_recipient_id:
+                msg.recipient_id = inferred_recipient_id
+                updated += 1
+
+        if updated:
+            db.commit()
+            get_logger(__name__).info("Backfilled recipient_id for %s historical messages", updated)
+        else:
+            db.rollback()
+    except Exception as exc:
+        db.rollback()
+        get_logger(__name__).warning("Message recipient backfill skipped: %s", exc)
+    finally:
+        db.close()
+
+
 def ensure_schema_migrations() -> None:
     """确保所有模型表已创建"""
     try:
@@ -107,6 +181,7 @@ def ensure_schema_migrations() -> None:
         _ensure_article_columns()
         _ensure_feedback_columns()
         _ensure_message_columns()
+        _backfill_message_recipients()
         get_logger(__name__).info("Schema migrations applied successfully")
     except Exception as exc:
         get_logger(__name__).warning("Schema migration skipped: %s", exc)

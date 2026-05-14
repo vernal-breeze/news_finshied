@@ -161,9 +161,30 @@ const ReaderArticleDetail: React.FC = () => {
     }
   }
 
-  const handleShare = () => {
-    navigator.clipboard.writeText(window.location.href)
-    toast.success('链接已复制到剪贴板')
+  const handleShare = async () => {
+    if (!article?.id) return
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: article.title,
+          text: article.abstract || article.title,
+          url: window.location.href,
+        })
+      } else {
+        await navigator.clipboard.writeText(window.location.href)
+        toast.success('链接已复制到剪贴板')
+      }
+
+      await feedbackAPI.recordShare(article.id)
+    } catch (error) {
+      // 用户主动取消系统分享时，不提示失败也不计数
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return
+      }
+      console.error('分享失败:', error)
+      toast.error('分享失败，请稍后重试')
+    }
   }
 
   const handleLike = async () => {

@@ -26,10 +26,8 @@ import {
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
-  RobotOutlined,
   LinkOutlined,
   DisconnectOutlined,
-  SyncOutlined,
   TeamOutlined,
   FlagOutlined,
 } from '@ant-design/icons'
@@ -38,7 +36,7 @@ import { topicAPI, unwrapPaginated } from '../../services/api'
 import type { TopicPlanning, Article } from '../../types'
 import { toast } from '../../components/common/Toast'
 
-const { Title, Text, Paragraph } = Typography
+const { Title, Text } = Typography
 const { TextArea } = Input
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
@@ -73,8 +71,6 @@ const Topics = () => {
   const [activeTopic, setActiveTopic] = useState<TopicPlanning | null>(null)
   const [topicArticles, setTopicArticles] = useState<Article[]>([])
   const [articlesLoading, setArticlesLoading] = useState(false)
-  const [analyzingId, setAnalyzingId] = useState<number | null>(null)
-  const [syncLoading, setSyncLoading] = useState(false)
   const [assignForm] = Form.useForm()
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkArticleId, setLinkArticleId] = useState<number | null>(null)
@@ -202,39 +198,6 @@ const Topics = () => {
     }
   }
 
-  const runAi = async (id: number) => {
-    setAnalyzingId(id)
-    try {
-      const raw = await topicAPI.aiAnalyze(id)
-      const result = unwrapData<Record<string, unknown>>(raw)
-      toast.success(
-        result?.score != null
-          ? `AI 评分 ${result.score}，建议已写入选题`
-          : '分析完成'
-      )
-      await fetchList()
-      if (activeTopic?.id === id) await refreshDetailTopic()
-    } catch {
-      toast.error('AI 分析失败')
-    } finally {
-      setAnalyzingId(null)
-    }
-  }
-
-  const runSync = async (id: number) => {
-    setSyncLoading(true)
-    try {
-      await topicAPI.syncFeedback(id)
-      toast.success('已根据已发布稿件同步反馈分')
-      await fetchList()
-      if (activeTopic?.id === id) await refreshDetailTopic()
-    } catch {
-      toast.error('同步失败（请确认选题下已有已发布稿件）')
-    } finally {
-      setSyncLoading(false)
-    }
-  }
-
   const submitAssign = async () => {
     if (!activeTopic) return
     try {
@@ -348,35 +311,14 @@ const Topics = () => {
         d ? dayjs(d).format('MM-DD HH:mm') : '—',
     },
     {
-      title: 'AI分',
-      dataIndex: 'ai_score',
-      width: 72,
-      render: (v: number) => (v != null ? v.toFixed(1) : '—'),
-    },
-    {
-      title: '反馈分',
-      dataIndex: 'performance_score',
-      width: 72,
-      render: (v: number | null) => (v != null ? v.toFixed(1) : '—'),
-    },
-    {
       title: '操作',
       key: 'actions',
-      width: 220,
+      width: 180,
       fixed: 'right',
       render: (_, row) => (
         <Space size="small" wrap>
           <Button type="link" size="small" onClick={() => openDetail(row)}>
             详情
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<RobotOutlined />}
-            onClick={() => runAi(row.id)}
-            loading={analyzingId === row.id}
-          >
-            AI
           </Button>
           <Button
             type="link"
@@ -405,7 +347,7 @@ const Topics = () => {
             选题策划
           </Title>
           <Text type="secondary" style={{ fontSize: 13 }}>
-            创建选题、AI 评估、指派记者、关联线索与稿件，并同步发布反馈形成闭环
+            创建选题、指派记者、关联线索与稿件，统一管理选题推进过程
           </Text>
         </Col>
         <Col>
@@ -542,24 +484,6 @@ const Topics = () => {
           setActiveTopic(null)
         }}
         destroyOnClose
-        extra={
-          <Space>
-            <Button
-              icon={<RobotOutlined />}
-              loading={activeTopic != null && analyzingId === activeTopic.id}
-              onClick={() => activeTopic && runAi(activeTopic.id)}
-            >
-              AI 分析
-            </Button>
-            <Button
-              icon={<SyncOutlined />}
-              loading={syncLoading}
-              onClick={() => activeTopic && runSync(activeTopic.id)}
-            >
-              同步反馈
-            </Button>
-          </Space>
-        }
       >
         {!activeTopic ? (
           <Empty />
@@ -573,14 +497,6 @@ const Topics = () => {
               </Descriptions.Item>
               <Descriptions.Item label="分类">
                 {activeTopic.category || '—'}
-              </Descriptions.Item>
-              <Descriptions.Item label="AI 评分 (0–10)">
-                {activeTopic.ai_score != null ? activeTopic.ai_score.toFixed(1) : '—'}
-              </Descriptions.Item>
-              <Descriptions.Item label="反馈聚合分 (0–10)">
-                {activeTopic.performance_score != null
-                  ? activeTopic.performance_score.toFixed(1)
-                  : '—'}
               </Descriptions.Item>
               <Descriptions.Item label="关联线索 ID">
                 {(activeTopic.ref_clue_ids || []).length
@@ -611,18 +527,6 @@ const Topics = () => {
                 保存指派
               </Button>
             </Form>
-
-            {activeTopic.ai_suggestion ? (
-              <>
-                <Title level={5} style={{ marginTop: 24 }}>
-                  AI 建议
-                </Title>
-                <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13 }}>
-                  {activeTopic.ai_suggestion}
-                </Paragraph>
-              </>
-            ) : null}
-
             <Title level={5} style={{ marginTop: 24 }}>
               旗下稿件
             </Title>

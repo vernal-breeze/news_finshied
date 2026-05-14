@@ -76,6 +76,15 @@ def _format_article(article: Article, db: Session = None) -> dict:
     return d
 
 
+def _reviewer_recipient_ids(db: Session) -> list[int]:
+    """返回应接收待审通知的审核员账号。"""
+    return [
+        user.id
+        for user in db.query(User).filter(User.role == "reviewer", User.is_active.is_(True)).all()
+        if user.id
+    ]
+
+
 class ArticleCreate(BaseModel):
     title: str
     content: str
@@ -278,5 +287,19 @@ async def submit_review(article_id: int, db: Session = Depends(get_db)):
     article.status = "pending_review"
     if article.reject_reason:
         article.reject_reason = ""
+
+    title = (article.title or "").strip() or f"稿件 #{article.id}"
+    for reviewer_id in _reviewer_recipient_ids(db):
+        db.add(
+            Message(
+                sender="system",
+                type="notification",
+                recipient_id=reviewer_id,
+                related_type="article",
+                related_id=article.id,
+                content=f"有新的待审核稿件《{title}》已提交，请及时处理。",
+            )
+        )
+
     db.commit()
     return {"code": 200, "message": "已提交审核"}
