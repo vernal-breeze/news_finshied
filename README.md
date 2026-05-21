@@ -10,14 +10,19 @@
 ### 采编端
 
 - 新闻线索：从可采集到有效内容的新闻源获取线索，支持 AI 分析新闻价值和传播潜力。
+![news_search.png](img/news_search.png)
 - 选题策划：支持选题创建、编辑、状态管理，以及选题与稿件关联。
+![select_scheme.png](img/select_scheme.png)
 - AI 稿件生成：支持输入标题、关键词、正文要求和自定义提示词，一起发送给 AI 生成稿件。
+![gernrate_news.png](img/gernrate_news.png)
 - 稿件管理：支持稿件创建、编辑、状态流转、提交审核和发布。
+![check_report.png](img/check_report.png)
 - 数据统计：展示稿件数量、线索数量、发布数量、待审核数量等核心指标。
-
+![user_header.png](img/user_header.png)
 ### 审核端
 
 - 待审队列：集中展示待审核稿件。
+![reviewer_header.png](img/reviewer_header.png)
 - AI 预审：大模型辅助判断内容质量、风险和审核建议。
 - 审核流转：支持通过、拒绝、退回修改。
 - 发布管理：审核通过后可发布到读者端。
@@ -25,8 +30,12 @@
 ### 读者端
 
 - 文章浏览：展示已发布稿件。
-- 搜索筛选：支持按标题、内容和分类检索。
+![reader_header.png](img/reader_header.png)
+![pages_read.png](img/pages_read.png)
+- 搜索筛选：支持按标题、内容和分类检索,字体大小。
+![Size_text.png](img/Size_text.png)
 - 互动反馈：支持评论、点赞等读者反馈能力。
+![feedback_analyze.png](img/feedback_analyze.png)
 
 ## 快速启动
 
