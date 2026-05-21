@@ -1,0 +1,21 @@
+/* App specific styles */
+.ant-layout {
+  background: transparent;
+}
+
+.ant-menu-dark {
+  background: transparent;
+}
+
+.ant-menu-dark .ant-menu-item-selected {
+  background: rgba(198, 40, 40, 0.22) !important;
+  border-right: 3px solid var(--app-primary);
+}
+
+.ant-menu-dark .ant-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.trigger:hover {
+  background: rgba(0, 0, 0, 0.05);
+}

@@ -1,0 +1,129 @@
+.reader-category {
+  min-height: 100vh;
+  background: var(--app-bg);
+  background-image:
+    radial-gradient(ellipse 100% 60% at 50% -10%, rgba(198, 40, 40, 0.06), transparent 55%);
+}
+
+.category-nav {
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 12px clamp(16px, 4vw, 40px);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.category-nav-content {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.category-nav .ant-tag {
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+  border: 1px solid var(--app-border);
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  margin: 0 6px 6px 0;
+}
+
+.category-nav .ant-tag:hover {
+  color: var(--app-primary);
+  border-color: rgba(198, 40, 40, 0.32);
+}
+
+.category-nav .ant-tag.active {
+  background: var(--app-primary);
+  color: #fff;
+  border-color: var(--app-primary);
+  font-weight: 500;
+}
+
+.category-breadcrumb {
+  margin-bottom: 24px;
+}
+
+.category-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.reader-category .reader-main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px clamp(16px, 4vw, 40px) 64px;
+}
+
+.reader-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  gap: 16px;
+}
+
+.article-card {
+  border-radius: 12px;
+  overflow: hidden;
+  transition: all 0.3s;
+  height: 100%;
+}
+
+.article-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.article-cover {
+  height: 180px;
+  background-size: cover;
+  background-position: center;
+  cursor: pointer;
+}
+
+.article-title {
+  margin: 12px 0 8px !important;
+  cursor: pointer;
+}
+
+.article-title:hover {
+  color: var(--app-primary);
+}
+
+.article-abstract {
+  color: #666;
+  margin-bottom: 12px !important;
+}
+
+.article-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reader-category .reader-footer {
+  text-align: center;
+  padding: 28px 24px 40px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.5);
+  border-top: 1px solid var(--app-border);
+  margin-top: 48px;
+}
+
+@media (max-width: 768px) {
+  .reader-category .reader-main {
+    padding: 20px 16px 48px;
+  }
+  
+  .category-nav .ant-tag {
+    font-size: 14px;
+    padding: 4px 12px;
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "site_name": "新闻采编系统 v2.0",
+  "logo_url": "",
+  "copyright": "© 2026 News Editor",
+  "favicon_url": "",
+  "description": "专业的新闻内容采编与审核平台",
+  "allow_registration": true,
+  "require_ai_check": true,
+  "email_notification": true,
+  "review_timeout_hours": 24,
+  "min_word_count": 500
+}

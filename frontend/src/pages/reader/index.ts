@@ -1,0 +1,5 @@
+export { default as ReaderHome } from './Home'
+export { default as ReaderArticleDetail } from './ArticleDetail'
+export { default as ReaderSearch } from './Search'
+export { default as ReaderCategory } from './Category'
+export { default as ReaderMessages } from './Messages'
