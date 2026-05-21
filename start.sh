@@ -153,7 +153,7 @@ check_env_file() {
     echo -e "${YELLOW}│  ${NC}后端会使用 MySQL 数据库启动                               ${YELLOW}│${NC}"
     echo -e "${YELLOW}│                                                         │${NC}"
     echo -e "${YELLOW}│  ${NC}如需使用 AI 功能，请编辑 ${BLUE}backend/.env${NC} 填入:          ${YELLOW}│${NC}"
-    echo -e "${YELLOW}│  ${NC}  DEEPSEEK_API_KEY=sk-xxx                                  ${YELLOW}│${NC}"
+    echo -e "${YELLOW}│  ${NC}  DEEPSEEK_API_KEY=<your-api-key>                          ${YELLOW}│${NC}"
     echo -e "${YELLOW}│  ${NC}免费注册 → https://platform.deepseek.com/                  ${YELLOW}│${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────────┘${NC}"
     echo ""
@@ -232,6 +232,30 @@ start_mysql() {
     if ! python3 -c "import pymysql" 2>/dev/null; then
         log_info "安装 PyMySQL 驱动..."
         python3 -m pip install pymysql cryptography >/dev/null 2>&1 || true
+    fi
+
+    ensure_mysql_app_user
+}
+
+ensure_mysql_app_user() {
+    log_info "检查 MySQL 应用账号..."
+    if docker exec news_editor_mysql sh -c '
+        mysql -uroot -p"$MYSQL_ROOT_PASSWORD" --connect-timeout=5 -e "
+            CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\`
+              CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+            CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';
+            ALTER USER '\''$MYSQL_USER'\''@'\''%'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';
+            CREATE USER IF NOT EXISTS '\''$MYSQL_USER'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';
+            ALTER USER '\''$MYSQL_USER'\''@'\''localhost'\'' IDENTIFIED BY '\''$MYSQL_PASSWORD'\'';
+            GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''%'\'';
+            GRANT ALL PRIVILEGES ON \`$MYSQL_DATABASE\`.* TO '\''$MYSQL_USER'\''@'\''localhost'\'';
+            FLUSH PRIVILEGES;
+        " >/dev/null
+    '; then
+        log_ok "MySQL 应用账号已就绪"
+    else
+        log_error "MySQL 应用账号修复失败，请查看: ./start.sh logs mysql"
+        exit 1
     fi
 }
 
@@ -437,6 +461,7 @@ main() {
         backend)
             check_env_file
             check_python
+            start_mysql
             ensure_backend_deps
             init_database
             start_backend
@@ -454,6 +479,7 @@ main() {
             check_env_file
             check_python
             check_node
+            start_mysql
             ensure_backend_deps
             ensure_frontend_deps
             init_database

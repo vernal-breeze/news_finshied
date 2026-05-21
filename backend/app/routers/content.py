@@ -31,6 +31,7 @@ class GenerateRequest(BaseModel):
     tone: str = "professional"                              # 语调：professional / neutral / enthusiastic
     audience: str = "general"                               # 受众：general / expert / public
     reference_material: Optional[str] = None                # 参考素材（线索内容等）
+    custom_prompt: Optional[str] = None                      # 用户额外提示词/写作要求
 
 
 class ImproveRequest(BaseModel):
@@ -157,6 +158,9 @@ async def generate(body: GenerateRequest, db: Session = Depends(get_db)):
         # 限制参考素材长度
         ref = body.reference_material[:3000]
         parts.append(f"参考素材：\n{ref}")
+    if body.custom_prompt and body.custom_prompt.strip():
+        custom_prompt = body.custom_prompt.strip()[:1200]
+        parts.append(f"用户额外提示词/写作要求：\n{custom_prompt}")
 
     parts.append(f"文体风格：{STYLE_MAP.get(body.style, body.style)}")
     parts.append(f"目标长度：{LENGTH_MAP.get(body.length, body.length)}")

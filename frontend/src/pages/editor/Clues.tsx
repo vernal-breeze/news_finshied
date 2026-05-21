@@ -350,7 +350,7 @@ const Clues = () => {
           }, 1000)
         }
       } else if (fetched > 0) {
-        toast.warning('⚠️ 采集到内容但均为重复线索')
+        toast.warning('⚠️ 采集到内容但入库失败，请查看后端日志')
         await refreshAfterCollection()
       } else {
         if (result?.code === 202 || errors.length > 0) {
@@ -360,11 +360,11 @@ const Clues = () => {
           if (errors.length > 0) {
             console.error('📋 采集错误详情:', errors)
             setTimeout(() => {
-              toast.info('💡 建议：尝试 IT之家、36氪 等稳定渠道', 8000)
+              toast.info('💡 建议：尝试 Bing搜索、腾讯新闻、知乎日报等可用渠道', 8000)
             }, 1500)
           }
         } else {
-          toast.warning(message || '未获取到新线索，可能已存在或网络问题')
+          toast.warning(message || '未获取到线索，请更换关键词或渠道')
         }
         await refreshAfterCollection()  // 刷新列表以显示现有数据
       }
@@ -809,10 +809,10 @@ const Clues = () => {
                 <div style={{ marginTop: 8, padding: '8px 12px', background: '#fffbe6', borderRadius: 6, fontSize: 12 }}>
                   <Text strong style={{ color: '#d48806' }}>💡 推荐配置：</Text>
                   <ul style={{ margin: '4px 0 0 0', paddingLeft: 20, color: '#666' }}>
-                    <li><strong>稳定渠道：</strong>IT之家、36氪（RSS源，速度快）</li>
-                    <li><strong>备用渠道：</strong>少数派、钛媒体</li>
-                    <li><strong>实验性：</strong>知乎日报、HackerNews（可能不稳定）</li>
-                    <li><strong>搜索发现：</strong>腾讯新闻、网易新闻等（通过搜索引擎）</li>
+                    <li><strong>搜索发现：</strong>Bing搜索（关键词检索，推荐）</li>
+                    <li><strong>新闻门户：</strong>腾讯新闻、新浪新闻</li>
+                    <li><strong>API 热榜：</strong>知乎日报、B站热门（适合不限定关键词时使用）</li>
+                    <li><strong>说明：</strong>已隐藏无法稳定采集的渠道，并取消去重入库</li>
                   </ul>
                 </div>
               </div>

@@ -94,7 +94,7 @@ def _safe_get(url: str, params: dict = None, headers: dict = None, timeout: int 
 # 信源配置（精简版：只保留最稳定的信源）
 # =============================================================================
 
-# RSS 源（3个最稳定的）
+# RSS/API 源（只保留当前实现中具备有效抓取地址的来源）
 _RSS_FEEDS: dict[str, dict] = {
     "tencent": {
         "name": "腾讯新闻",
@@ -117,24 +117,6 @@ _RSS_FEEDS: dict[str, dict] = {
         ],
         "hot": "https://news.sina.com.cn/",
         "category": "新闻门户",
-    },
-    "ifeng": {
-        "name": "凤凰网",
-        "feeds": [],
-        "hot": "https://news.ifeng.com/",
-        "category": "新闻门户",
-    },
-    "thepaper": {
-        "name": "澎湃新闻",
-        "feeds": [],
-        "hot": "https://www.thepaper.cn/",
-        "category": "新闻门户",
-    },
-    "weibo": {
-        "name": "微博",
-        "feeds": [],
-        "hot": "https://s.weibo.com/weibo?q={keyword}",
-        "category": "社交媒体",
     },
 }
 
@@ -193,13 +175,6 @@ def _title_matches_keyword(title: str, keyword: str) -> bool:
         return bool(re.search(r'\b' + re.escape(kw) + r'\b', title_lower))
     except re.error:
         return kw in title_lower
-
-
-def _normalize_for_dedup(title: str) -> str:
-    """标准化标题用于去重。"""
-    if not title:
-        return ""
-    return re.sub(r'\s+', ' ', title.strip()).lower()
 
 
 # ── Bing URL 解析 & 辅助 ─────────────────────────────────────
@@ -822,7 +797,6 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
     """统一采集入口：多渠道接入，支持定向搜索。"""
     query = keyword.strip()
     all_items: List[dict] = []
-    seen_titles: set = set()
 
     # ── 1. RSS 源 ──
     if source in ("all", "rss") or source in _RSS_FEEDS:
@@ -830,11 +804,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
             if source not in ("all", "rss") and source != rss_key:
                 continue
             try:
-                for item in _fetch_rss_feed(rss_key, query, max_results):
-                    t = item.get("title", "")
-                    if t and t not in seen_titles:
-                        seen_titles.add(t)
-                        all_items.append(item)
+                all_items.extend(_fetch_rss_feed(rss_key, query, max_results))
             except Exception as e:
                 logger.warning(f"RSS error [{rss_key}]: {e}")
 
@@ -844,11 +814,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
             if source not in ("all", "api") and source != api_key:
                 continue
             try:
-                for item in _fetch_api_feed(api_key, "", max_results):
-                    t = item.get("title", "")
-                    if t and t not in seen_titles:
-                        seen_titles.add(t)
-                        all_items.append(item)
+                all_items.extend(_fetch_api_feed(api_key, "", max_results))
             except Exception as e:
                 logger.warning(f"API error [{api_key}]: {e}")
 
@@ -863,11 +829,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
         try:
             logger.info(f"🔍 微博专用搜索 [{query}]")
             social_items = _fetch_bing_social_search(query, max_results=max_results)
-            for item in social_items:
-                t = item.get("title", "")
-                if t and t not in seen_titles:
-                    seen_titles.add(t)
-                    all_items.append(item)
+            all_items.extend(social_items)
         except Exception as e:
             logger.warning(f"微博搜索 error: {e}")
 
@@ -876,11 +838,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
         try:
             logger.info(f"🏛 政务专用搜索 [{query}]")
             gov_items = _fetch_bing_gov_search(query, max_results=max_results)
-            for item in gov_items:
-                t = item.get("title", "")
-                if t and t not in seen_titles:
-                    seen_titles.add(t)
-                    all_items.append(item)
+            all_items.extend(gov_items)
         except Exception as e:
             logger.warning(f"政府搜索 error: {e}")
 
@@ -889,11 +847,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
         try:
             logger.info(f"💬 社交搜索 [{source}/{query}]")
             social_items = _fetch_bing_social_search(query, max_results=max_results)
-            for item in social_items:
-                t = item.get("title", "")
-                if t and t not in seen_titles:
-                    seen_titles.add(t)
-                    all_items.append(item)
+            all_items.extend(social_items)
         except Exception as e:
             logger.warning(f"社交搜索 error: {e}")
 
@@ -905,20 +859,12 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
 
             html_results = _fetch_bing_html_search(query, max_results=max_results)
             if html_results:
-                for item in html_results:
-                    t = item.get("title", "")
-                    if t and t not in seen_titles:
-                        seen_titles.add(t)
-                        all_items.append(item)
+                all_items.extend(html_results)
             else:
                 # HTML 失败，RSS 兜底
                 logger.info(f"🔄 Bing HTML 无结果 [{query}]，回退 RSS")
                 rss_results = _fetch_bing_rss_search(query, max_results=max_results)
-                for item in rss_results:
-                    t = item.get("title", "")
-                    if t and t not in seen_titles:
-                        seen_titles.add(t)
-                        all_items.append(item)
+                all_items.extend(rss_results)
         except Exception as e:
             logger.warning(f"Bing 搜索 error: {e}")
 
@@ -1183,7 +1129,6 @@ async def collect_multichannel(
     logger.info(f"🔍 开始采集 | 关键词: {keyword_list} | 渠道: {channel_list}")
 
     items: List[dict] = []
-    seen_titles: set = set()
     fetch_errors: List[str] = []
     successful_sources: List[str] = []
     total_raw = 0
@@ -1194,20 +1139,10 @@ async def collect_multichannel(
             try:
                 results = _fetch_web_results(kw, ch, max_results)
                 total_raw += len(results)
-                new_count = 0
-                for item in results:
-                    t = item.get("title", "")
-                    u = item.get("url", "")
-                    norm_title = _normalize_for_dedup(t)
-                    key = (norm_title, u)
-                    if key in seen_titles:
-                        continue
-                    seen_titles.add(key)
-                    items.append(item)
-                    new_count += 1
+                items.extend(results)
                 if results:
-                    successful_sources.append(f"{ch}({new_count}条)")
-                    logger.info(f"✅ {ch} 采集成功，新增{new_count}条")
+                    successful_sources.append(f"{ch}({len(results)}条)")
+                    logger.info(f"✅ {ch} 采集成功，获取{len(results)}条")
                 else:
                     fetch_errors.append(f"{ch}: 无结果")
                     logger.warning(f"⚠️ {ch} 无结果")
@@ -1219,17 +1154,11 @@ async def collect_multichannel(
     created = []
     try:
         for item in items[:max_results]:
-            title = _normalize_for_dedup(str(item.get("title", "")).strip())
+            title = str(item.get("title", "")).strip()
             url = _normalize_url(str(item.get("url", "")))
             source = _ensure_source_name(str(item.get("source", "")))
             snippet = str(item.get("snippet", ""))[:300]
             category = str(item.get("category", ""))
-
-            # TODO: DB 去重暂时禁用，避免误判。仅靠 seen_titles 防止同批次重复
-            # existing = db.query(Clue).filter(Clue.title == title, Clue.source_url == url).first()
-            # if existing:
-            #     logger.info(f"⏭️ 跳过重复: {title[:50]}")
-            #     continue
 
             news_score, prop_score = _score_clue(title, snippet)
             clue = Clue(
@@ -1260,7 +1189,7 @@ async def collect_multichannel(
             message += f"（来源: {'、'.join(successful_sources[:3])}）"
         status_code = 200
     elif total_raw > 0:
-        message = "⚠️ 采集到内容但均为重复"
+        message = "⚠️ 采集到内容但入库失败"
         status_code = 200
     else:
         message = f"❌ 采集失败。失败原因: {'; '.join(fetch_errors[:3])}"

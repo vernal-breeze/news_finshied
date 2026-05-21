@@ -139,6 +139,9 @@ const AIArticle = () => {
   const [clueTopicHint, setClueTopicHint] = useState('')
   /** 内嵌预览：点击候选标题时展开预览区 */
   const [inlinePreviewVisible, setInlinePreviewVisible] = useState(false)
+  const [promptModalVisible, setPromptModalVisible] = useState(false)
+  const [pendingGenerateValues, setPendingGenerateValues] = useState<any | null>(null)
+  const [customPrompt, setCustomPrompt] = useState('')
 
   const filteredClues = useMemo(() => {
     const q = clueSearch.trim().toLowerCase()
@@ -255,9 +258,15 @@ const AIArticle = () => {
     }
   }
 
-  const handleGenerate = async (values: any) => {
+  const openPromptModal = (values: any) => {
+    setPendingGenerateValues(values)
+    setPromptModalVisible(true)
+  }
+
+  const handleGenerate = async (values: any, promptText = '') => {
     setGenerating(true)
     setGenerationProgress(0)
+    setPromptModalVisible(false)
     
     // Simulate progress for better UX
     const progressInterval = setInterval(() => {
@@ -282,6 +291,7 @@ const AIArticle = () => {
         tone: values.tone || 'professional',
         audience: values.audience || 'general',
         reference_material: allValues.content?.trim() || undefined,
+        custom_prompt: promptText.trim() || undefined,
       }
 
       const result = (await contentAPI.generate(requestData)) as {
@@ -320,7 +330,13 @@ const AIArticle = () => {
       toast.error(formatAxiosErrorMessage(error))
     } finally {
       setGenerating(false)
+      setPendingGenerateValues(null)
     }
+  }
+
+  const confirmGenerateWithPrompt = () => {
+    if (!pendingGenerateValues) return
+    handleGenerate(pendingGenerateValues, customPrompt)
   }
 
   const handleSaveArticle = async (title: string, content: string) => {
@@ -485,7 +501,7 @@ const AIArticle = () => {
               <Form
                 form={form}
                 layout="vertical"
-                onFinish={handleGenerate}
+                onFinish={openPromptModal}
                 initialValues={{
                   length: 'medium',
                   style: 'formal',
@@ -681,6 +697,50 @@ const AIArticle = () => {
                   <Select size="large" options={[1, 2, 3, 4, 5].map((n) => ({ value: n, label: `${n} 条` }))} />
                 </Form.Item>
 
+                <Form.Item label="AI 提示词（可选）" tooltip="填写你想到的额外要求，会和上方表单内容一起发送给 AI">
+                  <div
+                    style={{
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 10,
+                      padding: '12px 14px',
+                      background: customPrompt.trim() ? '#faf5ff' : '#fafafa',
+                    }}
+                  >
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                        <Text type={customPrompt.trim() ? undefined : 'secondary'}>
+                          {customPrompt.trim()
+                            ? `已填写 ${customPrompt.trim().length} 字提示词`
+                            : '还没有填写额外提示词，可补充结构、角度、语气、避免事项等要求'}
+                        </Text>
+                        <Space>
+                          {customPrompt.trim() && (
+                            <Button size="small" onClick={() => setCustomPrompt('')}>
+                              清空
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            type={customPrompt.trim() ? 'default' : 'primary'}
+                            icon={<EditOutlined />}
+                            onClick={() => setPromptModalVisible(true)}
+                          >
+                            {customPrompt.trim() ? '修改提示词' : '填写提示词'}
+                          </Button>
+                        </Space>
+                      </Space>
+                      {customPrompt.trim() && (
+                        <Paragraph
+                          ellipsis={{ rows: 2, expandable: true, symbol: '展开' }}
+                          style={{ marginBottom: 0, color: '#595959' }}
+                        >
+                          {customPrompt.trim()}
+                        </Paragraph>
+                      )}
+                    </Space>
+                  </div>
+                </Form.Item>
+
                 {/* Generate Button */}
                 <Form.Item>
                   <Button
@@ -714,6 +774,77 @@ const AIArticle = () => {
                 </Form.Item>
               </Form>
             )}
+
+            <Modal
+              title="输入 AI 生成提示词"
+              open={promptModalVisible}
+              onCancel={() => {
+                if (generating) return
+                setPromptModalVisible(false)
+                setPendingGenerateValues(null)
+              }}
+              footer={[
+                pendingGenerateValues ? (
+                  <Button
+                    key="skip"
+                    disabled={generating}
+                    onClick={() => {
+                      if (!pendingGenerateValues) return
+                      handleGenerate(pendingGenerateValues, '')
+                    }}
+                  >
+                    跳过，直接生成
+                  </Button>
+                ) : (
+                  <Button
+                    key="cancel"
+                    disabled={generating}
+                    onClick={() => setPromptModalVisible(false)}
+                  >
+                    取消
+                  </Button>
+                ),
+                pendingGenerateValues ? (
+                  <Button
+                    key="generate"
+                    type="primary"
+                    loading={generating}
+                    icon={<ThunderboltOutlined />}
+                    onClick={confirmGenerateWithPrompt}
+                  >
+                    使用提示词生成
+                  </Button>
+                ) : (
+                  <Button
+                    key="save"
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    onClick={() => {
+                      setPromptModalVisible(false)
+                      toast.success(customPrompt.trim() ? '提示词已保存，将随生成请求一起发送' : '已关闭提示词设置')
+                    }}
+                  >
+                    保存提示词
+                  </Button>
+                ),
+              ]}
+              destroyOnClose={false}
+            >
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message="可填写额外写作要求，例如角度、结构、重点、避免事项。留空也可以直接生成。"
+              />
+              <Input.TextArea
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                placeholder="例如：请重点分析技术创新与行业影响，采用倒金字塔结构，正文分 3 个小标题，语言客观中立，不要使用夸张营销表达。"
+                rows={6}
+                showCount
+                maxLength={1200}
+              />
+            </Modal>
 
             {/* Step 1: Generated Content */}
             {currentStep === 1 && generatedContent && (
