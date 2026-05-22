@@ -305,6 +305,18 @@ export const settingsAPI = {
   update: (data: Record<string, unknown>) => api.put('/api/settings', data),
 }
 
+export const adminAPI = {
+  overview: () => api.get('/api/users/admin/overview'),
+  users: (params?: {
+    page?: number
+    page_size?: number
+    role?: string
+    search?: string
+    is_active?: boolean
+  }) => api.get('/api/users/admin/users', { params }),
+  deleteUser: (id: number) => api.delete(`/api/users/admin/users/${id}`),
+}
+
 export const uploadAPI = {
   /** 需登录；响应体为 { code, message, data: { url } } */
   image: (file: File) => {

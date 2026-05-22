@@ -21,6 +21,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   UserOutlined,
+  TeamOutlined,
   CheckCircleOutlined,
   BarChartOutlined,
   RobotOutlined,
@@ -103,6 +104,13 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       icon: <BarChartOutlined />,
       label: '反馈分析',
     },
+    userRole === 'admin'
+      ? {
+          key: '/editor/admin',
+          icon: <TeamOutlined />,
+          label: '管理员端',
+        }
+      : null,
     // 只有审核员才能看到审核管理
     userRole === 'reviewer' ? {
       key: '/review',
@@ -252,7 +260,13 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   // Get user info
   const user = JSON.parse(localStorage.getItem('user') || '{}')
   const userName = user.full_name || user.username || '用户'
-  const userRoleText = user.role === 'user' ? '投稿用户' : user.role === 'reviewer' ? '审核员' : '编辑'
+  const userRoleText =
+    user.role === 'admin' ? '管理员'
+      : user.role === 'chief_editor' ? '主编'
+        : user.role === 'user' ? '投稿用户'
+          : user.role === 'reviewer' ? '审核员'
+            : user.role === 'reporter' ? '记者'
+              : '编辑'
 
   // Get page title based on current path
   const getPageTitle = () => {
@@ -262,6 +276,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       '/editor/topics': '选题策划',
       '/editor/ai-article': 'AI稿件生成',
       '/editor/articles': '稿件管理',
+      '/editor/admin': '管理员端',
       '/review': '审核管理',
       '/editor/analytics': '反馈分析',
     }

@@ -1,9 +1,10 @@
 """用户个人中心 API"""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -11,6 +12,8 @@ from app.models.user import User, get_password_hash, verify_password
 from app.models.article import Article
 from app.models.review import Review
 from app.models.clue import Clue
+from app.models.message import Message
+from app.models.topic import Topic
 from app.routers.auth import get_current_user
 from app.routers.public import UPLOAD_DIR
 
@@ -48,6 +51,56 @@ class PasswordUpdate(BaseModel):
     """密码修改"""
     old_password: str
     new_password: str = Field(..., min_length=6, max_length=50)
+
+
+ROLE_LABELS = {
+    "admin": "管理员",
+    "chief_editor": "主编",
+    "editor": "编辑",
+    "reviewer": "审核员",
+    "reporter": "记者",
+    "user": "投稿用户",
+}
+
+
+def _ensure_admin(user: User) -> None:
+    """管理员端接口权限校验。"""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可访问")
+
+
+def _serialize_admin_user(user: User, db: Session) -> dict:
+    """管理员人员列表中的用户摘要。"""
+    article_query = db.query(Article).filter(Article.author_id == user.id)
+    review_query = db.query(Review).filter(Review.reviewer_id == user.id)
+    clue_query = db.query(Clue).filter(Clue.creator_id == user.id)
+
+    article_count = article_query.count()
+    published_count = article_query.filter(Article.status == "published").count()
+    pending_review_count = article_query.filter(
+        Article.status.in_(["pending_review", "reviewing"])
+    ).count()
+    draft_count = article_query.filter(Article.status == "draft").count()
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "nickname": user.nickname or user.username,
+        "full_name": user.full_name or "",
+        "email": user.email,
+        "role": user.role,
+        "role_label": ROLE_LABELS.get(user.role, user.role),
+        "is_active": bool(user.is_active),
+        "avatar": user.avatar or "",
+        "created_at": user.created_at.isoformat() if user.created_at else "",
+        "updated_at": user.updated_at.isoformat() if user.updated_at else "",
+        "article_count": article_count,
+        "published_count": published_count,
+        "pending_review_count": pending_review_count,
+        "draft_count": draft_count,
+        "review_count": review_query.count(),
+        "clue_count": clue_query.count(),
+    }
 
 
 @router.get("/me")
@@ -93,6 +146,186 @@ def get_profile(db: Session = Depends(get_db), current_user: User = Depends(get_
             "clue_count": clue_count,
             "last_login": current_user.updated_at.isoformat() if current_user.updated_at else "",
         }
+    }
+
+
+@router.get("/admin/overview")
+def get_admin_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """管理员控制台概览：系统数据、角色分布、内容状态。"""
+    _ensure_admin(current_user)
+
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+
+    role_rows = db.query(User.role, func.count(User.id)).group_by(User.role).all()
+    role_counts = {role or "unknown": count for role, count in role_rows}
+    article_status_rows = (
+        db.query(Article.status, func.count(Article.id))
+        .group_by(Article.status)
+        .all()
+    )
+    article_status = {status or "unknown": count for status, count in article_status_rows}
+
+    total_articles = db.query(Article).count()
+    total_clues = db.query(Clue).count()
+    total_reviews = db.query(Review).count()
+    total_views = db.query(func.sum(Article.view_count)).scalar() or 0
+    total_likes = db.query(func.sum(Article.like_count)).scalar() or 0
+
+    active_users = db.query(User).filter(User.is_active.is_(True)).count()
+    inactive_users = db.query(User).filter(User.is_active.is_(False)).count()
+
+    recent_users = (
+        db.query(User)
+        .order_by(desc(User.created_at))
+        .limit(5)
+        .all()
+    )
+
+    return {
+        "code": 200,
+        "data": {
+            "users": {
+                "total": db.query(User).count(),
+                "active": active_users,
+                "inactive": inactive_users,
+                "by_role": [
+                    {
+                        "role": role,
+                        "label": ROLE_LABELS.get(role, role),
+                        "count": count,
+                    }
+                    for role, count in sorted(role_counts.items())
+                ],
+                "reviewers": role_counts.get("reviewer", 0),
+                "reporters": role_counts.get("reporter", 0) + role_counts.get("user", 0),
+                "editors": role_counts.get("editor", 0) + role_counts.get("chief_editor", 0),
+            },
+            "content": {
+                "articles": total_articles,
+                "clues": total_clues,
+                "reviews": total_reviews,
+                "published": article_status.get("published", 0),
+                "draft": article_status.get("draft", 0),
+                "pending_review": article_status.get("pending_review", 0)
+                + article_status.get("reviewing", 0),
+                "recent_articles_7days": db.query(Article).filter(Article.created_at >= since).count(),
+                "recent_clues_7days": db.query(Clue).filter(Clue.created_at >= since).count(),
+            },
+            "traffic": {
+                "views": int(total_views),
+                "likes": int(total_likes),
+            },
+            "recent_users": [_serialize_admin_user(user, db) for user in recent_users],
+        },
+    }
+
+
+@router.get("/admin/users")
+def list_admin_users(
+    page: int = 1,
+    page_size: int = 20,
+    role: Optional[str] = None,
+    search: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """管理员查看人员列表，支持按角色、状态、关键词筛选。"""
+    _ensure_admin(current_user)
+
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    q = db.query(User)
+
+    if role:
+        q = q.filter(User.role == role)
+    if is_active is not None:
+        q = q.filter(User.is_active.is_(is_active))
+    if search:
+        kw = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                User.username.ilike(kw),
+                User.nickname.ilike(kw),
+                User.full_name.ilike(kw),
+                User.email.ilike(kw),
+            )
+        )
+
+    total = q.count()
+    users = (
+        q.order_by(desc(User.created_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "code": 200,
+        "data": [_serialize_admin_user(user, db) for user in users],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.delete("/admin/users/{user_id}")
+def delete_admin_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """管理员删除人员账号；保留业务数据并清空人员引用。"""
+    _ensure_admin(current_user)
+
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if target_user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="不能删除当前登录的管理员账号")
+    if target_user.role == "admin":
+        admin_count = db.query(User).filter(User.role == "admin").count()
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="至少需要保留一个管理员账号")
+
+    cleanup_counts = {
+        "articles": db.query(Article)
+        .filter(Article.author_id == target_user.id)
+        .update({Article.author_id: None}, synchronize_session=False),
+        "reviews": db.query(Review)
+        .filter(Review.reviewer_id == target_user.id)
+        .update({Review.reviewer_id: None}, synchronize_session=False),
+        "clues": db.query(Clue)
+        .filter(Clue.creator_id == target_user.id)
+        .update({Clue.creator_id: None}, synchronize_session=False),
+        "topics_editor": db.query(Topic)
+        .filter(Topic.editor_id == target_user.id)
+        .update({Topic.editor_id: None}, synchronize_session=False),
+        "topics_assigned": db.query(Topic)
+        .filter(Topic.assigned_user_id == target_user.id)
+        .update({Topic.assigned_user_id: None}, synchronize_session=False),
+        "messages": db.query(Message)
+        .filter(Message.recipient_id == target_user.id)
+        .update({Message.recipient_id: None}, synchronize_session=False),
+    }
+
+    deleted_user = {
+        "id": target_user.id,
+        "username": target_user.username,
+        "role": target_user.role,
+    }
+    db.delete(target_user)
+    db.commit()
+
+    return {
+        "code": 200,
+        "message": "人员账号已删除，历史业务数据已保留",
+        "data": {
+            "deleted_user": deleted_user,
+            "cleanup_counts": cleanup_counts,
+        },
     }
 
 

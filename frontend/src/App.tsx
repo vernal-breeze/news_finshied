@@ -4,7 +4,7 @@ import { ToastProvider } from './components/common/Toast'
 import { ErrorBoundary } from './components/common/ErrorBoundary'
 import MainLayout from './components/layouts/MainLayout'
 import ReviewLayout from './components/layouts/ReviewLayout'
-import { EditorHome as Home, Clues, Articles, Analytics, AIArticle, Topics, Profile, EditorSettings } from './pages/editor'
+import { EditorHome as Home, Clues, Articles, Analytics, AIArticle, Topics, Profile, EditorSettings, AdminDashboard } from './pages/editor'
 import { EditorLogin, Register } from './pages/auth'
 import { ReviewLogin, ReviewDashboard, ReviewQueue, Published, Settings, ReviewProfile } from './pages/review'
 import { ReaderHome, ReaderArticleDetail, ReaderSearch, ReaderCategory, ReaderMessages } from './pages/reader'
@@ -36,6 +36,18 @@ const ReviewRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const role = getUserRole()
   if (role !== 'reviewer') {
     return <Navigate to="/review/login" replace />
+  }
+  return <>{children}</>
+}
+
+const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const token = localStorage.getItem('token')
+  if (!token) {
+    return <Navigate to="/login" replace />
+  }
+  const role = getUserRole()
+  if (role !== 'admin') {
+    return <Navigate to="/editor" replace />
   }
   return <>{children}</>
 }
@@ -190,6 +202,18 @@ function App() {
                   </MainLayout>
                 </Layout>
               </EditorRoute>
+            }
+          />
+          <Route
+            path="/editor/admin"
+            element={
+              <AdminRoute>
+                <Layout style={{ minHeight: '100vh' }}>
+                  <MainLayout>
+                    <AdminDashboard />
+                  </MainLayout>
+                </Layout>
+              </AdminRoute>
             }
           />
 
