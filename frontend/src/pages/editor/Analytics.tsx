@@ -282,7 +282,7 @@ const Analytics = () => {
 
         <Title level={5} style={{ marginBottom: 16 }}>
           <TrophyOutlined style={{ color: '#faad14', marginRight: 8 }} />
-          热门稿件排行
+          已发布稿件反馈
         </Title>
 
         {articles.length > 0 ? (
@@ -294,7 +294,7 @@ const Analytics = () => {
             pagination={{ pageSize: 10 }}
           />
         ) : (
-          <Empty description="暂无数据" />
+          <Empty description="暂无已发布稿件" />
         )}
       </Card>
     </div>

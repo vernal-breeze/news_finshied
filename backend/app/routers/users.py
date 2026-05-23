@@ -53,6 +53,11 @@ class PasswordUpdate(BaseModel):
     new_password: str = Field(..., min_length=6, max_length=50)
 
 
+class AdminPasswordReset(BaseModel):
+    """管理员重置人员密码"""
+    new_password: str = Field(..., min_length=6, max_length=50)
+
+
 ROLE_LABELS = {
     "admin": "管理员",
     "chief_editor": "主编",
@@ -228,6 +233,7 @@ def list_admin_users(
     page: int = 1,
     page_size: int = 20,
     role: Optional[str] = None,
+    roles: Optional[str] = None,
     search: Optional[str] = None,
     is_active: Optional[bool] = None,
     db: Session = Depends(get_db),
@@ -240,7 +246,10 @@ def list_admin_users(
     page_size = min(max(page_size, 1), 100)
     q = db.query(User)
 
-    if role:
+    role_list = [item.strip() for item in (roles or "").split(",") if item.strip()]
+    if role_list:
+        q = q.filter(User.role.in_(role_list))
+    elif role:
         q = q.filter(User.role == role)
     if is_active is not None:
         q = q.filter(User.is_active.is_(is_active))
@@ -327,6 +336,30 @@ def delete_admin_user(
             "cleanup_counts": cleanup_counts,
         },
     }
+
+
+@router.put("/admin/users/{user_id}/password")
+def reset_admin_user_password(
+    user_id: int,
+    body: AdminPasswordReset,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """管理员重置人员账号密码。"""
+    _ensure_admin(current_user)
+
+    target_user = db.query(User).filter(User.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if target_user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="当前管理员请在个人中心修改自己的密码")
+    if target_user.role == "admin":
+        raise HTTPException(status_code=400, detail="管理员账号密码请由本人修改")
+
+    target_user.password_hash = get_password_hash(body.new_password)
+    target_user.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"code": 200, "message": "人员密码已重置"}
 
 
 @router.put("/me")

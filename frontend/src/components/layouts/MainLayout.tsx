@@ -31,6 +31,7 @@ import {
   QuestionCircleOutlined,
   GlobalOutlined,
   FlagOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { fetchMessages, fetchUnreadMessageCount, markMessageAsRead } from '../../services/readerApi'
@@ -62,9 +63,9 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   // Active article/pending review counts for badges
   const pendingCount = 0 // This would come from API in real app
+  const isAdmin = userRole === 'admin'
 
-  // 投稿用户(user)不显示审核管理，审核员(reviewer)不显示选题策划
-  const menuItems: MenuItem[] = [
+  const editorMenuItems: MenuItem[] = [
     {
       key: '/editor',
       icon: <HomeOutlined />,
@@ -104,13 +105,6 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       icon: <BarChartOutlined />,
       label: '反馈分析',
     },
-    userRole === 'admin'
-      ? {
-          key: '/editor/admin',
-          icon: <TeamOutlined />,
-          label: '管理员端',
-        }
-      : null,
     // 只有审核员才能看到审核管理
     userRole === 'reviewer' ? {
       key: '/review',
@@ -123,6 +117,43 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       label: '读者端',
     },
   ].filter(Boolean) as MenuItem[]
+
+  const adminMenuItems: MenuItem[] = [
+    {
+      key: 'admin-root',
+      icon: <TeamOutlined />,
+      label: '管理员端',
+      children: [
+        {
+          key: '/editor/admin/users',
+          icon: <TeamOutlined />,
+          label: '全部内部人员',
+        },
+        {
+          key: '/editor/admin/admins',
+          icon: <SafetyCertificateOutlined />,
+          label: '管理员',
+        },
+        {
+          key: '/editor/admin/reviewers',
+          icon: <CheckCircleOutlined />,
+          label: '审核员',
+        },
+        {
+          key: '/editor/admin/editors',
+          icon: <UserOutlined />,
+          label: '编辑人员',
+        },
+      ],
+    },
+    {
+      key: 'reader-portal',
+      icon: <GlobalOutlined />,
+      label: '读者端',
+    },
+  ]
+
+  const menuItems = isAdmin ? adminMenuItems : editorMenuItems
 
   const userMenuItems: MenuProps['items'] = [
     {
@@ -277,6 +308,10 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       '/editor/ai-article': 'AI稿件生成',
       '/editor/articles': '稿件管理',
       '/editor/admin': '管理员端',
+      '/editor/admin/users': '管理员端 · 全部用户',
+      '/editor/admin/admins': '管理员端 · 管理员',
+      '/editor/admin/reviewers': '管理员端 · 审核员',
+      '/editor/admin/editors': '管理员端 · 编辑人员',
       '/review': '审核管理',
       '/editor/analytics': '反馈分析',
     }
@@ -361,6 +396,7 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           theme="dark"
           mode="inline"
           selectedKeys={[location.pathname]}
+          defaultOpenKeys={isAdmin ? ['admin-root'] : []}
           items={menuItems}
           onClick={({ key }) => {
             if (key === 'reader-portal') {

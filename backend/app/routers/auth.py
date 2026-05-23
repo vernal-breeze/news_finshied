@@ -101,7 +101,7 @@ def _get_user_from_token(token: str, db: Session) -> User:
     return user
 
 
-async def get_current_user(
+def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> User:
@@ -109,7 +109,7 @@ async def get_current_user(
     return _get_user_from_token(token, db)
 
 
-async def get_optional_user(
+def get_optional_user(
     token: Optional[str] = Depends(oauth2_scheme_optional),
     db: Session = Depends(get_db),
 ) -> Optional[User]:
@@ -125,7 +125,7 @@ async def get_optional_user(
 # ---- 路由 ----
 
 @router.post("/login", response_model=TokenResponse)
-async def login(
+def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -148,7 +148,7 @@ async def login(
 
 
 @router.post("/register", response_model=UserResponse)
-async def register(body: RegisterRequest, db: Session = Depends(get_db)):
+def register(body: RegisterRequest, db: Session = Depends(get_db)):
     """用户注册"""
     # 检查用户名重复
     existing = db.query(User).filter(User.username == body.username).first()
@@ -174,6 +174,6 @@ async def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(current_user: User = Depends(get_current_user)):
+def me(current_user: User = Depends(get_current_user)):
     """获取当前登录用户信息"""
     return UserResponse(data=UserOut.model_validate(current_user))

@@ -6,6 +6,8 @@
 - parsel: XPath 解析，比 BeautifulSoup 更高效
 """
 import json
+import asyncio
+import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 import time
@@ -21,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_
+from starlette.concurrency import run_in_threadpool
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 from app.core.config import get_settings
@@ -28,11 +31,30 @@ from app.database import get_db
 from app.models.article import Article
 from app.models.clue import Clue
 from app.models.user import User
-from app.routers.auth import get_current_user, get_optional_user
+from app.routers.auth import get_current_user
 
 settings = get_settings()
 router = APIRouter(prefix="/api/clues", tags=["Clues"])
 logger = logging.getLogger(__name__)
+
+
+def _can_view_all_clues(user: User) -> bool:
+    """管理员可以查看全站线索，其余账号只看自己的线索。"""
+    return user.role == "admin"
+
+
+def _scope_clue_query(query, user: User):
+    """按当前账号隔离线索数据，避免不同账号互相看到线索。"""
+    if _can_view_all_clues(user):
+        return query
+    return query.filter(Clue.creator_id == user.id)
+
+
+def _get_accessible_clue(db: Session, clue_id: int, user: User) -> Clue:
+    clue = _scope_clue_query(db.query(Clue).filter(Clue.id == clue_id), user).first()
+    if not clue:
+        raise HTTPException(status_code=404, detail="线索不存在")
+    return clue
 
 
 # =============================================================================
@@ -50,16 +72,17 @@ def _create_session() -> cffi_requests.Session:
     return session
 
 
-# 全局会话（复用连接池）
-_browser_session: Optional[cffi_requests.Session] = None
+# 每个线程独立会话，避免并发采集时共享 curl_cffi Session。
+_session_local = threading.local()
 
 
 def _get_session() -> cffi_requests.Session:
-    """获取全局浏览器会话。"""
-    global _browser_session
-    if _browser_session is None:
-        _browser_session = _create_session()
-    return _browser_session
+    """获取当前线程的浏览器会话。"""
+    session = getattr(_session_local, "session", None)
+    if session is None:
+        session = _create_session()
+        _session_local.session = session
+    return session
 
 
 # =============================================================================
@@ -136,9 +159,24 @@ _API_FEEDS: dict[str, dict] = {
     },
 }
 
-# 搜索源（仅 Bing RSS，其余中文搜索引擎返回 JS 渲染页面无法抓取）
+# 科技媒体源：通过 Bing site: 定向搜索实现，确保选择后能按关键词返回结果。
+_TECH_SEARCH_SITES: dict[str, dict] = {
+    "ithome": {"name": "IT之家", "domain": "ithome.com"},
+    "36kr": {"name": "36氪", "domain": "36kr.com"},
+    "sspai": {"name": "少数派", "domain": "sspai.com"},
+    "oschina": {"name": "开源中国", "domain": "oschina.net"},
+    "geekpark": {"name": "极客公园", "domain": "geekpark.net"},
+}
+
+# 搜索源（统一走 Bing HTML + RSS 兜底；站点类源使用 site: 定向查询）
 _SEARCH_SOURCES: dict[str, dict] = {
-    "bing_search": {"name": "Bing搜索", "type": "bing_rss"},
+    "bing_search": {"name": "Bing搜索", "type": "bing_html_rss", "category": "综合搜索"},
+    **{
+        key: {"name": config["name"], "type": "bing_site_search", "category": "科技媒体"}
+        for key, config in _TECH_SEARCH_SITES.items()
+    },
+    "social": {"name": "社交平台搜索", "type": "bing_site_search", "category": "社交媒体"},
+    "government": {"name": "政府网站搜索", "type": "bing_site_search", "category": "政府公告"},
 }
 
 
@@ -204,6 +242,38 @@ def _extract_domain(url: str) -> str:
         return urlparse(url).netloc.replace("www.", "").replace("m.", "")
     except Exception:
         return url
+
+
+_DOMAIN_SOURCE_NAMES: dict[str, str] = {
+    "baike.baidu.com": "百度百科",
+    "zhidao.baidu.com": "百度知道",
+    "baijiahao.baidu.com": "百家号",
+    "ithome.com": "IT之家",
+    "36kr.com": "36氪",
+    "sspai.com": "少数派",
+    "oschina.net": "开源中国",
+    "geekpark.net": "极客公园",
+    "zhihu.com": "知乎",
+    "weibo.com": "微博",
+    "xiaohongshu.com": "小红书",
+    "bilibili.com": "B站",
+    "qq.com": "腾讯新闻",
+    "sina.com.cn": "新浪新闻",
+    "163.com": "网易新闻",
+    "thepaper.cn": "澎湃新闻",
+    "gov.cn": "政府网站",
+}
+
+
+def _source_name_from_url(url: str) -> str:
+    """根据结果 URL 识别真实来源站点，避免把搜索通道显示成来源。"""
+    domain = _extract_domain(url).lower()
+    if not domain:
+        return ""
+    for key, name in _DOMAIN_SOURCE_NAMES.items():
+        if domain == key or domain.endswith(f".{key}"):
+            return name
+    return domain
 
 
 def _is_weibo_url(url: str) -> bool:
@@ -651,12 +721,12 @@ def _fetch_bing_html_search(keyword: str, max_results: int = 10, match_keyword: 
             if not _title_matches_keyword(title, match_kw):
                 continue
 
-            source_name = _extract_domain(real_url) if real_url else "Bing搜索"
+            source_name = _source_name_from_url(real_url) or "Bing搜索"
             results.append({
                 "title": title,
                 "url": real_url or f"https://www.bing.com/search?q={quote_plus(query)}",
                 "snippet": snippet,
-                "source": "Bing搜索",
+                "source": source_name,
                 "category": "综合",
             })
 
@@ -739,6 +809,37 @@ def _fetch_bing_gov_search(keyword: str, max_results: int = 10) -> List[dict]:
     return results[:max_results]
 
 
+def _fetch_bing_site_search(keyword: str, source_key: str, max_results: int = 10) -> List[dict]:
+    """Bing 指定站点搜索，用于科技媒体等没有稳定公开 RSS 的来源。"""
+    query = keyword.strip()
+    site = _TECH_SEARCH_SITES.get(source_key)
+    if not query or not site:
+        return []
+
+    site_name = site["name"]
+    search_q = f"{query} site:{site['domain']}"
+    results: List[dict] = []
+    try:
+        time.sleep(random.uniform(1.0, 2.0))
+        html_results = _fetch_bing_html_search(search_q, max_results=max_results, match_keyword=query)
+        for item in html_results:
+            item["source"] = site_name
+            item["category"] = "科技媒体"
+            results.append(item)
+
+        if not html_results:
+            rss_results = _fetch_bing_rss_search(search_q, max_results=max_results)
+            for item in rss_results:
+                item["source"] = site_name
+                item["category"] = "科技媒体"
+                results.append(item)
+    except Exception as e:
+        logger.warning(f"Bing site search [{source_key}/{query}]: {e}")
+
+    logger.info(f"Bing 站内搜索 [{site_name}/{query}]: {len(results)} 条")
+    return results[:max_results]
+
+
 def _fetch_bing_rss_search(keyword: str, max_results: int = 10) -> List[dict]:
     """Bing RSS 搜索接口（作为 HTML 抓取的兜底方案）。"""
     query = keyword.strip()
@@ -772,7 +873,7 @@ def _fetch_bing_rss_search(keyword: str, max_results: int = 10) -> List[dict]:
                 "title": title,
                 "url": link,
                 "snippet": snippet,
-                "source": "Bing搜索",
+                "source": _source_name_from_url(link) or "Bing搜索",
                 "category": "综合",
             })
             if len(results) >= max_results:
@@ -797,9 +898,13 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
     """统一采集入口：多渠道接入，支持定向搜索。"""
     query = keyword.strip()
     all_items: List[dict] = []
+    is_rss_source = source in _RSS_FEEDS
+    is_api_source = source in _API_FEEDS
+    is_search_source = source in _SEARCH_SOURCES
+    is_unknown_source = source not in ("all", "rss", "api", "search") and not is_rss_source and not is_api_source and not is_search_source
 
     # ── 1. RSS 源 ──
-    if source in ("all", "rss") or source in _RSS_FEEDS:
+    if source in ("all", "rss") or is_rss_source:
         for rss_key in _RSS_FEEDS:
             if source not in ("all", "rss") and source != rss_key:
                 continue
@@ -809,7 +914,7 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
                 logger.warning(f"RSS error [{rss_key}]: {e}")
 
     # ── 2. API热搜源（仅无关键词时调用）──
-    if not query and (source in ("all", "api") or source in _API_FEEDS):
+    if not query and (source in ("all", "api") or is_api_source):
         for api_key in _API_FEEDS:
             if source not in ("all", "api") and source != api_key:
                 continue
@@ -818,14 +923,24 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
             except Exception as e:
                 logger.warning(f"API error [{api_key}]: {e}")
 
-    # ── 3. 定向渠道分发 ──
-    has_explicit_source = source not in ("all", "rss", "api", "search") and source not in _SEARCH_SOURCES
-
     if not query:
         return all_items[:max_results]
 
-    # ── 3a. weibo 专用渠道：社交搜索 + 微博站内检索 ──
-    if source == "weibo" or (has_explicit_source and "weibo" in source.lower()):
+    # 明确选择新闻门户或 API 源时，不做搜索引擎兜底，避免来源串台。
+    if is_rss_source or is_api_source or source in ("rss", "api"):
+        return _filter_and_rank_results(all_items, query)[:max_results]
+
+    # ── 3a. 科技媒体定向搜索 ──
+    if source in _TECH_SEARCH_SITES:
+        try:
+            logger.info(f"💻 科技媒体搜索 [{source}/{query}]")
+            tech_items = _fetch_bing_site_search(query, source, max_results=max_results)
+            all_items.extend(tech_items)
+        except Exception as e:
+            logger.warning(f"科技媒体搜索 error [{source}]: {e}")
+
+    # ── 3b. weibo 专用渠道：社交搜索 + 微博站内检索 ──
+    elif source == "weibo" or (is_unknown_source and "weibo" in source.lower()):
         try:
             logger.info(f"🔍 微博专用搜索 [{query}]")
             social_items = _fetch_bing_social_search(query, max_results=max_results)
@@ -833,8 +948,8 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
         except Exception as e:
             logger.warning(f"微博搜索 error: {e}")
 
-    # ── 3b. government / 政务专用渠道 ──
-    elif source == "government" or (has_explicit_source and "gov" in source.lower()):
+    # ── 3c. government / 政务专用渠道 ──
+    elif source == "government" or (is_unknown_source and "gov" in source.lower()):
         try:
             logger.info(f"🏛 政务专用搜索 [{query}]")
             gov_items = _fetch_bing_gov_search(query, max_results=max_results)
@@ -842,8 +957,8 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
         except Exception as e:
             logger.warning(f"政府搜索 error: {e}")
 
-    # ── 3c. social / zhihu / xiaohongshu 专用渠道 ──
-    elif source in ("social", "zhihu", "xiaohongshu") or (has_explicit_source and any(s in source.lower() for s in ("social", "zhihu", "xiaohongshu"))):
+    # ── 3d. social / zhihu / xiaohongshu 专用渠道 ──
+    elif source in ("social", "zhihu", "xiaohongshu") or (is_unknown_source and any(s in source.lower() for s in ("social", "zhihu", "xiaohongshu"))):
         try:
             logger.info(f"💬 社交搜索 [{source}/{query}]")
             social_items = _fetch_bing_social_search(query, max_results=max_results)
@@ -851,10 +966,10 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
         except Exception as e:
             logger.warning(f"社交搜索 error: {e}")
 
-    # ── 3d. Bing 搜索（通用/all/search）：HTML 优先 → RSS 兜底 ──
-    if source in ("all", "search") or source in _SEARCH_SOURCES or (has_explicit_source and not all_items):
+    # ── 3e. Bing 搜索（通用/all/search）：HTML 优先 → RSS 兜底 ──
+    if source in ("all", "search", "bing_search") or (is_search_source and source not in _TECH_SEARCH_SITES and not all_items) or (is_unknown_source and not all_items):
         try:
-            if has_explicit_source and not all_items:
+            if is_unknown_source and not all_items:
                 logger.info(f"🔄 [{source}] 无直接结果，Bing HTML 搜索兜底: {query}")
 
             html_results = _fetch_bing_html_search(query, max_results=max_results)
@@ -873,6 +988,20 @@ def _fetch_web_results(keyword: str, source: str = "all", max_results: int = 10)
         all_items = _filter_and_rank_results(all_items, query)
 
     return all_items[:max_results]
+
+
+async def _fetch_collection_jobs(keyword_list: List[str], channel_list: List[str], max_results: int):
+    """在线程池中并发执行外部采集，避免阻塞 FastAPI 事件循环。"""
+    limiter = asyncio.Semaphore(4)
+
+    async def fetch_one(keyword: str, channel: str):
+        async with limiter:
+            return await run_in_threadpool(_fetch_web_results, keyword, channel, max_results)
+
+    tasks = [fetch_one(keyword, channel) for keyword in keyword_list for channel in channel_list]
+    job_keys = [(keyword, channel) for keyword in keyword_list for channel in channel_list]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return list(zip(job_keys, results))
 
 
 # =============================================================================
@@ -895,9 +1024,18 @@ def _ensure_source_name(source: str) -> str:
         "ifanr": "爱范儿", "tmtpost": "钛媒体",
         "geekpark": "极客公园", "freebuf": "FreeBuf",
         "zhihu_daily": "知乎日报", "bilibili_hot": "B站热门",
-        "bing_search": "Bing搜索",
+        "bing_search": "Bing搜索", "social": "社交平台搜索",
+        "government": "政府网站搜索",
     }
     return mapping.get(source, source or "全网资讯")
+
+
+def _display_source_name(source: str, url: str = "") -> str:
+    """序列化和入库时使用的展示来源；Bing 搜索结果优先展示真实站点。"""
+    source_name = (source or "").strip()
+    if source_name in ("Bing搜索", "bing_search", "全网资讯", ""):
+        return _source_name_from_url(url) or _ensure_source_name(source_name)
+    return _ensure_source_name(source_name)
 
 
 def _score_clue(title: str, snippet: str) -> tuple:
@@ -926,7 +1064,8 @@ def _serialize_clue(clue: Clue) -> dict:
         keywords = [k.strip() for k in (clue.keywords or "").split(",") if k.strip()]
     return {
         "id": clue.id, "title": clue.title, "content": clue.content,
-        "source": clue.source or "", "source_url": clue.source_url or "",
+        "source": _display_source_name(clue.source or "", clue.source_url or ""),
+        "source_url": clue.source_url or "",
         "keywords": keywords,
         "news_value_score": clue.news_value_score or 0,
         "propagation_potential": clue.propagation_potential or 0,
@@ -961,6 +1100,32 @@ class ClueUpdate(BaseModel):
     propagation_potential: Optional[float] = None
 
 
+class SearchInfoRequest(BaseModel):
+    keyword: str = ""
+    source: Optional[str] = "all"
+    max_results: int = 15
+    exact_match: bool = False
+    engine: Optional[str] = None
+
+
+def _parse_datetime_filter(value: Optional[str], end_of_day: bool = False) -> Optional[datetime]:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        normalized = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if end_of_day and "T" not in raw and len(raw) <= 10:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return dt
+    except ValueError:
+        return None
+
+
 # =============================================================================
 # API 路由
 # =============================================================================
@@ -972,24 +1137,35 @@ async def list_clues(
     status: Optional[str] = None,
     exclude_status: Optional[str] = None,
     creator_id: Optional[int] = None,
+    category: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     search: Optional[str] = None,
     search_fields: Optional[str] = None,
     search_mode: Optional[str] = "fuzzy",
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """获取线索列表。"""
-    q = db.query(Clue)
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    q = _scope_clue_query(db.query(Clue), current_user)
     if status:
         q = q.filter(Clue.status == status)
     if exclude_status:
         for es in [s.strip() for s in exclude_status.split(",") if s.strip()]:
             q = q.filter(Clue.status != es)
-    # 投稿者只看自己的，编辑/管理员看全部
-    if creator_id is not None:
+    if category:
+        q = q.filter(Clue.category == category)
+    start_dt = _parse_datetime_filter(start_date)
+    end_dt = _parse_datetime_filter(end_date, end_of_day=True)
+    if start_dt:
+        q = q.filter(Clue.created_at >= start_dt)
+    if end_dt:
+        q = q.filter(Clue.created_at <= end_dt)
+    # 管理员可以显式筛选创建者；普通账号固定只能看自己的。
+    if creator_id is not None and _can_view_all_clues(current_user):
         q = q.filter(Clue.creator_id == creator_id)
-    elif current_user and current_user.role in ("reporter", "user"):
-        q = q.filter(Clue.creator_id == current_user.id)
 
     if search:
         keywords = [k.strip() for k in search.split(",") if k.strip()]
@@ -1066,11 +1242,19 @@ async def list_clues(
 
 @router.get("/sources")
 async def list_sources():
-    """返回所有可用信源列表。"""
+    """返回实际可用信源列表。
+
+    只暴露当前采集逻辑可以直接返回线索的来源：
+    - RSS 源必须有 feed URL，避免把仅有首页但无法稳定解析的来源展示给前端。
+    - API 源保留可直接请求的 JSON 接口。
+    - 搜索源保留后端已实现分发逻辑的搜索方向。
+    """
     sources = []
     for key, config in _RSS_FEEDS.items():
         feeds = config.get("feeds", [])
-        sources.append({"key": key, "name": config["name"], "type": "rss", "category": config["category"], "url": feeds[0] if feeds else config.get("hot", ""), "status": "active" if feeds else "fallback"})
+        if not feeds:
+            continue
+        sources.append({"key": key, "name": config["name"], "type": "rss", "category": config["category"], "url": feeds[0], "status": "active"})
     for key, config in _API_FEEDS.items():
         sources.append({"key": key, "name": config["name"], "type": "api", "category": config["category"], "url": config["url"], "status": "active"})
     for key, config in _SEARCH_SOURCES.items():
@@ -1116,7 +1300,7 @@ async def collect_multichannel(
     keywords: str = "",
     channels: str = "",
     max_results: int = 10,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """多渠道并发采集新闻线索。"""
@@ -1133,22 +1317,20 @@ async def collect_multichannel(
     successful_sources: List[str] = []
     total_raw = 0
 
-    for kw in keyword_list:
-        for ch in channel_list:
-            time.sleep(random.uniform(1.0, 2.0))
-            try:
-                results = _fetch_web_results(kw, ch, max_results)
-                total_raw += len(results)
-                items.extend(results)
-                if results:
-                    successful_sources.append(f"{ch}({len(results)}条)")
-                    logger.info(f"✅ {ch} 采集成功，获取{len(results)}条")
-                else:
-                    fetch_errors.append(f"{ch}: 无结果")
-                    logger.warning(f"⚠️ {ch} 无结果")
-            except Exception as e:
-                fetch_errors.append(f"{ch}: {str(e)[:50]}")
-                logger.error(f"❌ {ch} 采集失败: {e}")
+    fetch_jobs = await _fetch_collection_jobs(keyword_list, channel_list, max_results)
+    for (_, ch), result in fetch_jobs:
+        if isinstance(result, Exception):
+            fetch_errors.append(f"{ch}: {str(result)[:50]}")
+            logger.error(f"❌ {ch} 采集失败: {result}")
+            continue
+        total_raw += len(result)
+        items.extend(result)
+        if result:
+            successful_sources.append(f"{ch}({len(result)}条)")
+            logger.info(f"✅ {ch} 采集成功，获取{len(result)}条")
+        else:
+            fetch_errors.append(f"{ch}: 无结果")
+            logger.warning(f"⚠️ {ch} 无结果")
 
     # 入库
     created = []
@@ -1156,9 +1338,9 @@ async def collect_multichannel(
         for item in items[:max_results]:
             title = str(item.get("title", "")).strip()
             url = _normalize_url(str(item.get("url", "")))
-            source = _ensure_source_name(str(item.get("source", "")))
             snippet = str(item.get("snippet", ""))[:300]
             category = str(item.get("category", ""))
+            source = _display_source_name(str(item.get("source", "")), url)
 
             news_score, prop_score = _score_clue(title, snippet)
             clue = Clue(
@@ -1167,8 +1349,8 @@ async def collect_multichannel(
                 keywords=json.dumps(keyword_list, ensure_ascii=False),
                 status="pending",
                 news_value_score=news_score, propagation_potential=prop_score,
-                creator_id=current_user.id if current_user else None,
-                collected_by=(current_user.nickname or current_user.full_name or current_user.username) if current_user else "system",
+                creator_id=current_user.id,
+                collected_by=current_user.nickname or current_user.full_name or current_user.username,
                 category=category,
                 processed_at=datetime.now(timezone(timedelta(hours=8))),
             )
@@ -1209,17 +1391,64 @@ async def collect_multichannel(
 
 
 @router.post("/batch-delete")
-async def batch_delete_clue(ids: List[int], db: Session = Depends(get_db)):
-    db.query(Clue).filter(Clue.id.in_(ids)).delete(synchronize_session=False)
+async def batch_delete_clue(
+    ids: List[int],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = _scope_clue_query(db.query(Clue).filter(Clue.id.in_(ids)), current_user)
+    deleted = q.delete(synchronize_session=False)
     db.commit()
-    return {"code": 200, "message": f"已删除 {len(ids)} 条"}
+    return {"code": 200, "message": f"已删除 {deleted} 条"}
+
+
+@router.post("/{clue_id}/search-info")
+async def search_clue_info(
+    clue_id: int,
+    body: SearchInfoRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """基于当前线索检索相关资料，仅返回结果，不写入别人的线索库。"""
+    clue = _get_accessible_clue(db, clue_id, current_user)
+    keyword = (body.keyword or clue.title or "").strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="关键词不能为空")
+
+    max_results = min(max(body.max_results or 15, 1), 50)
+    source = body.source or "all"
+    if source == "news":
+        source = "all"
+
+    results = await run_in_threadpool(_fetch_web_results, keyword, source, max_results)
+    if body.exact_match:
+        lowered = keyword.lower()
+        results = [
+            item
+            for item in results
+            if lowered in (item.get("title") or "").lower()
+            or lowered in (item.get("snippet") or "").lower()
+        ]
+
+    return {
+        "code": 200,
+        "message": f"检索到 {len(results)} 条资料",
+        "data": {
+            "keyword": keyword,
+            "source": source,
+            "total": len(results),
+            "results": results[:max_results],
+        },
+    }
 
 
 @router.get("/{clue_id}")
-async def get_clue(clue_id: int, db: Session = Depends(get_db)):
-    clue = db.query(Clue).filter(Clue.id == clue_id).first()
-    if not clue:
-        raise HTTPException(status_code=404, detail="线索不存在")
+async def get_clue(
+    clue_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    clue = _get_accessible_clue(db, clue_id, current_user)
     return {"code": 200, "data": _serialize_clue(clue)}
 
 
@@ -1240,10 +1469,13 @@ async def create_clue(body: ClueCreate, current_user: User = Depends(get_current
 
 
 @router.put("/{clue_id}")
-async def update_clue(clue_id: int, body: ClueUpdate, db: Session = Depends(get_db)):
-    clue = db.query(Clue).filter(Clue.id == clue_id).first()
-    if not clue:
-        raise HTTPException(status_code=404, detail="线索不存在")
+async def update_clue(
+    clue_id: int,
+    body: ClueUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    clue = _get_accessible_clue(db, clue_id, current_user)
     payload = body.model_dump(exclude_none=True)
     if "keywords" in payload:
         payload["keywords"] = json.dumps(payload["keywords"] or [], ensure_ascii=False)
@@ -1255,20 +1487,24 @@ async def update_clue(clue_id: int, body: ClueUpdate, db: Session = Depends(get_
 
 
 @router.delete("/{clue_id}")
-async def delete_clue(clue_id: int, db: Session = Depends(get_db)):
-    clue = db.query(Clue).filter(Clue.id == clue_id).first()
-    if not clue:
-        raise HTTPException(status_code=404, detail="线索不存在")
+async def delete_clue(
+    clue_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    clue = _get_accessible_clue(db, clue_id, current_user)
     db.delete(clue)
     db.commit()
     return {"code": 200, "message": "删除成功"}
 
 
 @router.post("/{clue_id}/analyze")
-async def analyze_clue(clue_id: int, db: Session = Depends(get_db)):
-    clue = db.query(Clue).filter(Clue.id == clue_id).first()
-    if not clue:
-        raise HTTPException(status_code=404, detail="线索不存在")
+async def analyze_clue(
+    clue_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    clue = _get_accessible_clue(db, clue_id, current_user)
     score, prop = _score_clue(clue.title, clue.content or "")
     clue.news_value_score = score
     clue.propagation_potential = prop

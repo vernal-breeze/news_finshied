@@ -86,5 +86,7 @@ export { parseApiError }
 
 /** 登录后进入的采编/审核首页（读者端下拉菜单复用） */
 export function workspacePathForRole(role: string | undefined): string {
-  return role === 'reviewer' ? '/review/queue' : '/editor'
+  if (role === 'reviewer') return '/review/queue'
+  if (role === 'admin') return '/editor/admin/users'
+  return '/editor'
 }

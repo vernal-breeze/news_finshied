@@ -27,11 +27,16 @@ FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_HEALTH_PATH="${BACKEND_HEALTH_PATH:-/health}"
 UVICORN_RELOAD="${UVICORN_RELOAD:-0}"
+BACKEND_WORKERS="${BACKEND_WORKERS:-2}"
+REUSE_RUNNING_SERVICES="${REUSE_RUNNING_SERVICES:-1}"
+FORCE_DB_INIT="${FORCE_DB_INIT:-0}"
+MYSQL_USER_REPAIR="${MYSQL_USER_REPAIR:-auto}"
 
 BACKEND_PID_FILE="/tmp/news_editor_backend.pid"
 FRONTEND_PID_FILE="/tmp/news_editor_frontend.pid"
 BACKEND_LOG_FILE="/tmp/news_editor_backend.log"
 FRONTEND_LOG_FILE="/tmp/news_editor_frontend.log"
+FRONTEND_DEPS_STAMP="${FRONTEND_DIR}/node_modules/.news_editor_deps_stamp"
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -64,6 +69,33 @@ wait_http_up() {
         i=$((i + 1))
     done
     return 1
+}
+
+http_ready() {
+    local url="$1"
+    curl -fsS "${url}" >/dev/null 2>&1
+}
+
+app_stack_ready() {
+    if http_ready "http://127.0.0.1:${BACKEND_PORT}${BACKEND_HEALTH_PATH}" \
+        && http_ready "http://127.0.0.1:${FRONTEND_PORT}"; then
+        return 0
+    fi
+
+    # 某些受限执行环境无法 curl localhost，但仍可通过监听端口判断本机服务已在运行。
+    [ -n "$(port_pids "${BACKEND_PORT}")" ] && [ -n "$(port_pids "${FRONTEND_PORT}")" ]
+}
+
+sync_running_pid_files() {
+    local backend_pids frontend_pids
+    backend_pids="$(port_pids "${BACKEND_PORT}")"
+    frontend_pids="$(port_pids "${FRONTEND_PORT}")"
+    if [ -n "${backend_pids}" ]; then
+        echo "${backend_pids%% *}" > "${BACKEND_PID_FILE}"
+    fi
+    if [ -n "${frontend_pids}" ]; then
+        echo "${frontend_pids%% *}" > "${FRONTEND_PID_FILE}"
+    fi
 }
 
 stop_by_pid_file() {
@@ -197,6 +229,11 @@ start_mysql() {
     # 检查 MySQL 容器是否已运行
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^news_editor_mysql$'; then
         log_ok "MySQL 容器已在运行"
+        local mysql_status
+        mysql_status="$(docker inspect --format='{{.State.Health.Status}}' news_editor_mysql 2>/dev/null || echo 'running')"
+        if [ "${mysql_status}" != "healthy" ] && [ "${mysql_status}" != "running" ]; then
+            wait_mysql_healthy
+        fi
     else
         # 检查容器是否存在但已停止
         if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^news_editor_mysql$'; then
@@ -208,24 +245,7 @@ start_mysql() {
             docker compose up -d mysql 2>&1
         fi
 
-        # 等待 MySQL 健康
-        log_info "等待 MySQL 就绪..."
-        local i=0
-        while [ "${i}" -lt 30 ]; do
-            local status
-            status="$(docker inspect --format='{{.State.Health.Status}}' news_editor_mysql 2>/dev/null || echo 'unknown')"
-            if [ "${status}" = "healthy" ]; then
-                break
-            fi
-            sleep 2
-            i=$((i + 1))
-        done
-
-        if [ "${status}" != "healthy" ]; then
-            log_error "MySQL 启动超时，查看日志: docker compose logs mysql"
-            exit 1
-        fi
-        log_ok "MySQL 已就绪"
+        wait_mysql_healthy
     fi
 
     # 确保 pymysql 已安装
@@ -234,7 +254,43 @@ start_mysql() {
         python3 -m pip install pymysql cryptography >/dev/null 2>&1 || true
     fi
 
-    ensure_mysql_app_user
+    if [ "${MYSQL_USER_REPAIR}" = "1" ]; then
+        ensure_mysql_app_user
+    elif [ "${MYSQL_USER_REPAIR}" = "0" ]; then
+        log_ok "跳过 MySQL 应用账号检查"
+    else
+        if mysql_app_user_ready; then
+            log_ok "MySQL 应用账号已就绪"
+        else
+            ensure_mysql_app_user
+        fi
+    fi
+}
+
+wait_mysql_healthy() {
+    log_info "等待 MySQL 就绪..."
+    local i=0
+    local status="unknown"
+    while [ "${i}" -lt 30 ]; do
+        status="$(docker inspect --format='{{.State.Health.Status}}' news_editor_mysql 2>/dev/null || echo 'unknown')"
+        if [ "${status}" = "healthy" ]; then
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if [ "${status}" != "healthy" ]; then
+        log_error "MySQL 启动超时，查看日志: docker compose logs mysql"
+        exit 1
+    fi
+    log_ok "MySQL 已就绪"
+}
+
+mysql_app_user_ready() {
+    docker exec news_editor_mysql sh -c '
+        mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" --connect-timeout=3 -e "SELECT 1" >/dev/null
+    ' >/dev/null 2>&1
 }
 
 ensure_mysql_app_user() {
@@ -299,13 +355,32 @@ PY
 
 ensure_frontend_deps() {
     cd "${FRONTEND_DIR}"
-    if [ ! -d "node_modules" ]; then
+    local lock_hash=""
+    if [ -f "package-lock.json" ]; then
+        lock_hash="$(cksum package-lock.json | awk '{print $1":"$2}')"
+    fi
+    local old_hash=""
+    if [ -f "${FRONTEND_DEPS_STAMP}" ]; then
+        old_hash="$(cat "${FRONTEND_DEPS_STAMP}" 2>/dev/null || true)"
+    fi
+
+    if [ ! -d "node_modules" ] || { [ -n "${lock_hash}" ] && [ "${old_hash}" != "${lock_hash}" ]; }; then
         log_info "安装前端依赖..."
         npm install
+        if [ -n "${lock_hash}" ]; then
+            echo "${lock_hash}" > "${FRONTEND_DEPS_STAMP}"
+        fi
+    else
+        log_ok "前端依赖已就绪，跳过安装"
     fi
 }
 
 init_database() {
+    if [ "${FORCE_DB_INIT}" != "1" ]; then
+        log_ok "数据库初始化交由后端启动迁移处理（设置 FORCE_DB_INIT=1 可强制预初始化）"
+        return
+    fi
+
     cd "${BACKEND_DIR}"
     # shellcheck disable=SC1091
     if [ -f "${BACKEND_DIR}/venv/bin/activate" ]; then
@@ -330,6 +405,16 @@ start_backend() {
         # venv 不完整，确保使用系统命令而非 venv 残留
         export PATH="$(echo "$PATH" | sed "s|${BACKEND_DIR}/venv/bin:||g")"
     fi
+    if [ "${REUSE_RUNNING_SERVICES}" = "1" ] && http_ready "http://127.0.0.1:${BACKEND_PORT}${BACKEND_HEALTH_PATH}"; then
+        local existing_pids
+        existing_pids="$(port_pids "${BACKEND_PORT}")"
+        if [ -n "${existing_pids}" ]; then
+            echo "${existing_pids%% *}" > "${BACKEND_PID_FILE}"
+        fi
+        log_ok "后端已在运行: http://localhost:${BACKEND_PORT}"
+        return
+    fi
+
     stop_by_pid_file "${BACKEND_PID_FILE}" "后端服务"
     stop_by_port "${BACKEND_PORT}" "后端服务"
     export PYTHONPATH="${BACKEND_DIR}:${PYTHONPATH:-}"
@@ -341,12 +426,14 @@ start_backend() {
     local uvicorn_args=(app.main:app --host "${BACKEND_HOST}" --port "${BACKEND_PORT}")
     if [ "${UVICORN_RELOAD}" = "1" ]; then
         uvicorn_args+=(--reload)
+    elif [ "${BACKEND_WORKERS}" -gt 1 ]; then
+        uvicorn_args+=(--workers "${BACKEND_WORKERS}")
     fi
 
     nohup uvicorn "${uvicorn_args[@]}" >"${BACKEND_LOG_FILE}" 2>&1 &
     local pid=$!
     echo "${pid}" > "${BACKEND_PID_FILE}"
-    if wait_http_up "http://127.0.0.1:${BACKEND_PORT}${BACKEND_HEALTH_PATH}" 40; then
+    if wait_http_up "http://127.0.0.1:${BACKEND_PORT}${BACKEND_HEALTH_PATH}" 20; then
         log_ok "后端已启动: http://localhost:${BACKEND_PORT} (PID: ${pid})"
     else
         if [ -f "${BACKEND_LOG_FILE}" ]; then
@@ -360,13 +447,23 @@ start_backend() {
 
 start_frontend() {
     cd "${FRONTEND_DIR}"
+    if [ "${REUSE_RUNNING_SERVICES}" = "1" ] && http_ready "http://127.0.0.1:${FRONTEND_PORT}"; then
+        local existing_pids
+        existing_pids="$(port_pids "${FRONTEND_PORT}")"
+        if [ -n "${existing_pids}" ]; then
+            echo "${existing_pids%% *}" > "${FRONTEND_PID_FILE}"
+        fi
+        log_ok "前端已在运行: http://localhost:${FRONTEND_PORT}"
+        return
+    fi
+
     stop_by_pid_file "${FRONTEND_PID_FILE}" "前端服务"
     stop_by_port "${FRONTEND_PORT}" "前端服务"
     log_info "启动前端服务..."
     nohup npm run dev -- --host 0.0.0.0 --port "${FRONTEND_PORT}" >"${FRONTEND_LOG_FILE}" 2>&1 &
     local pid=$!
     echo "${pid}" > "${FRONTEND_PID_FILE}"
-    if wait_http_up "http://127.0.0.1:${FRONTEND_PORT}" 30; then
+    if wait_http_up "http://127.0.0.1:${FRONTEND_PORT}" 15; then
         log_ok "前端已启动: http://localhost:${FRONTEND_PORT} (PID: ${pid})"
     else
         log_warn "前端正在启动中，日志见 ${FRONTEND_LOG_FILE}"
@@ -493,6 +590,14 @@ main() {
             show_logs "${2:-all}"
             ;;
         all)
+            if [ "${REUSE_RUNNING_SERVICES}" = "1" ] && app_stack_ready; then
+                sync_running_pid_files
+                echo -e "${GREEN}[OK]${NC} 服务已在运行，跳过重复启动"
+                echo -e "前端: ${BLUE}http://localhost:${FRONTEND_PORT}${NC}"
+                echo -e "后端: ${BLUE}http://localhost:${BACKEND_PORT}${NC}"
+                echo -e "文档: ${BLUE}http://localhost:${BACKEND_PORT}/docs${NC}"
+                return
+            fi
             check_env_file
             check_python
             check_node

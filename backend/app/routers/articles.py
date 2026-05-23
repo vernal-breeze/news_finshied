@@ -12,9 +12,37 @@ from app.models.article import Article
 from app.models.clue import Clue
 from app.models.message import Message
 from app.models.user import User
-from app.routers.auth import get_optional_user
+from app.routers.auth import get_current_user
+from app.routers.feedback import ensure_feedback_for_article
 
 router = APIRouter(prefix="/api/articles", tags=["Articles"])
+
+
+def _can_view_all_articles(user: User) -> bool:
+    return user.role in ("admin", "chief_editor", "editor", "reviewer")
+
+
+def _scope_article_query(query, user: User):
+    if _can_view_all_articles(user):
+        return query
+    return query.filter(Article.author_id == user.id)
+
+
+def _get_accessible_article(db: Session, article_id: int, user: User) -> Article:
+    article = _scope_article_query(db.query(Article).filter(Article.id == article_id), user).first()
+    if not article:
+        raise HTTPException(status_code=404, detail="文章不存在")
+    return article
+
+
+def _get_accessible_clue(db: Session, clue_id: int, user: User) -> Clue:
+    q = db.query(Clue).filter(Clue.id == clue_id)
+    if user.role != "admin":
+        q = q.filter(Clue.creator_id == user.id)
+    clue = q.first()
+    if not clue:
+        raise HTTPException(status_code=404, detail="线索不存在或无权使用")
+    return clue
 
 
 def _tags_to_str(tags: Union[str, List[str], None]) -> Optional[str]:
@@ -119,26 +147,26 @@ class ArticleUpdate(BaseModel):
 
 
 @router.get("")
-async def list_articles(
+def list_articles(
     page: int = 1,
     page_size: int = 20,
     status: Optional[str] = None,
     category: Optional[str] = None,
     author_id: Optional[int] = None,
     search: Optional[str] = None,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    q = db.query(Article)
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    q = _scope_article_query(db.query(Article), current_user)
     if status:
         q = q.filter(Article.status == status)
     if category:
         q = q.filter(Article.category == category)
-    # 投稿者只看自己的，编辑/管理员看全部
-    if author_id is not None:
+    # 管理/编辑/审核账号可以按作者筛选；普通账号固定只能看自己的稿件。
+    if author_id is not None and _can_view_all_articles(current_user):
         q = q.filter(Article.author_id == author_id)
-    elif current_user and current_user.role in ("reporter", "user"):
-        q = q.filter(Article.author_id == current_user.id)
     if search:
         like = f"%{search}%"
         q = q.filter(Article.title.ilike(like) | Article.content.ilike(like))
@@ -154,19 +182,22 @@ async def list_articles(
 
 
 @router.get("/{article_id}")
-async def get_article(article_id: int, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="文章不存在")
+def get_article(
+    article_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    article = _get_accessible_article(db, article_id, current_user)
     return {"code": 200, "data": _format_article(article, db)}
 
 
 @router.post("")
-async def create_article(
+def create_article(
     body: ArticleCreate,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    linked_clue = _get_accessible_clue(db, body.clue_id, current_user) if body.clue_id else None
     article = Article(
         title=body.title,
         content=body.content,
@@ -174,28 +205,29 @@ async def create_article(
         category=body.category,
         tags=body.tags,
         status="draft",
-        author_id=current_user.id if current_user else None,
+        author_id=current_user.id,
         clue_id=body.clue_id,
         topic_id=body.topic_id,
     )
     db.add(article)
     # 如果从线索创建，将线索状态更新为 converted
-    if body.clue_id:
-        clue = db.query(Clue).filter(Clue.id == body.clue_id).first()
-        if clue:
-            clue.status = "converted"
-            clue.processed_at = datetime.now(timezone.utc)
+    if linked_clue:
+        linked_clue.status = "converted"
+        linked_clue.processed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(article)
     return {"code": 200, "message": "创建成功", "data": _format_article(article, db)}
 
 
 @router.put("/{article_id}")
-async def update_article(article_id: int, body: ArticleUpdate, db: Session = Depends(get_db)):
+def update_article(
+    article_id: int,
+    body: ArticleUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     try:
-        article = db.query(Article).filter(Article.id == article_id).first()
-        if not article:
-            raise HTTPException(status_code=404, detail="文章不存在")
+        article = _get_accessible_article(db, article_id, current_user)
         payload = body.model_dump(exclude_none=True)
         if "title" in payload and payload["title"] is None:
             payload.pop("title")
@@ -224,10 +256,12 @@ async def update_article(article_id: int, body: ArticleUpdate, db: Session = Dep
 
 
 @router.delete("/{article_id}")
-async def delete_article(article_id: int, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="文章不存在")
+def delete_article(
+    article_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    article = _get_accessible_article(db, article_id, current_user)
     db.delete(article)
     db.commit()
     return {"code": 200, "message": "删除成功"}
@@ -238,11 +272,14 @@ class UnpublishRequest(BaseModel):
 
 
 @router.post("/{article_id}/unpublish")
-async def unpublish_article(article_id: int, req: UnpublishRequest, db: Session = Depends(get_db)):
+def unpublish_article(
+    article_id: int,
+    req: UnpublishRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """下线已发布文章，附驳回理由，作者可修改后重新提交"""
-    article = db.query(Article).filter(Article.id == article_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="文章不存在")
+    article = _get_accessible_article(db, article_id, current_user)
     if article.status != "published":
         raise HTTPException(status_code=400, detail="只能下线已发布的文章")
     reason = req.reason.strip()
@@ -270,20 +307,25 @@ async def unpublish_article(article_id: int, req: UnpublishRequest, db: Session 
 
 
 @router.post("/{article_id}/publish")
-async def publish_article(article_id: int, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="文章不存在")
+def publish_article(
+    article_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    article = _get_accessible_article(db, article_id, current_user)
     article.status = "published"
+    ensure_feedback_for_article(db, article)
     db.commit()
     return {"code": 200, "message": "发布成功"}
 
 
 @router.post("/{article_id}/submit-review")
-async def submit_review(article_id: int, db: Session = Depends(get_db)):
-    article = db.query(Article).filter(Article.id == article_id).first()
-    if not article:
-        raise HTTPException(status_code=404, detail="文章不存在")
+def submit_review(
+    article_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    article = _get_accessible_article(db, article_id, current_user)
     article.status = "pending_review"
     if article.reject_reason:
         article.reject_reason = ""

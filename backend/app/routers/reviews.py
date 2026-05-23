@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models.article import Article
 from app.models.review import Review
 from app.models.user import User
+from app.routers.feedback import ensure_feedback_for_article
 
 router = APIRouter(prefix="/api/reviews", tags=["Reviews"])
 article_reviews_router = APIRouter(prefix="/api/articles", tags=["Article Reviews"])
@@ -111,7 +112,7 @@ def _serialize_pending_article(db: Session, article: Article, latest_review: Opt
 
 
 @router.get("")
-async def list_reviews(
+def list_reviews(
     page: int = 1,
     page_size: int = 20,
     status: Optional[str] = None,
@@ -132,7 +133,7 @@ async def list_reviews(
 
 
 @router.get("/pending")
-async def get_pending(db: Session = Depends(get_db)):
+def get_pending(db: Session = Depends(get_db)):
     candidate_articles = (
         db.query(Article)
         .filter(Article.status.in_(["pending_review", "reviewing"]))
@@ -155,7 +156,7 @@ async def get_pending(db: Session = Depends(get_db)):
 
 
 @router.post("")
-async def create_review(body: ReviewCreate, db: Session = Depends(get_db)):
+def create_review(body: ReviewCreate, db: Session = Depends(get_db)):
     article = db.query(Article).filter(Article.id == body.article_id).first()
     if not article:
         raise HTTPException(status_code=404, detail="文章不存在")
@@ -169,12 +170,14 @@ async def create_review(body: ReviewCreate, db: Session = Depends(get_db)):
     )
     db.add(review)
     article.status = _status_to_article_status(review_status)
+    if article.status == "published":
+        ensure_feedback_for_article(db, article)
     db.commit()
     db.refresh(review)
     return {"code": 200, "message": "审核提交成功", "data": _serialize_review(db, review)}
 
 
 @article_reviews_router.get("/{article_id}/reviews")
-async def get_reviews_by_article(article_id: int, db: Session = Depends(get_db)):
+def get_reviews_by_article(article_id: int, db: Session = Depends(get_db)):
     reviews = db.query(Review).filter(Review.article_id == article_id).order_by(desc(Review.created_at)).all()
     return {"code": 200, "data": [_serialize_review(db, row) for row in reviews]}

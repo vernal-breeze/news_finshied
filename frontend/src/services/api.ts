@@ -311,10 +311,13 @@ export const adminAPI = {
     page?: number
     page_size?: number
     role?: string
+    roles?: string
     search?: string
     is_active?: boolean
   }) => api.get('/api/users/admin/users', { params }),
   deleteUser: (id: number) => api.delete(`/api/users/admin/users/${id}`),
+  resetUserPassword: (id: number, new_password: string) =>
+    api.put(`/api/users/admin/users/${id}/password`, { new_password }),
 }
 
 export const uploadAPI = {

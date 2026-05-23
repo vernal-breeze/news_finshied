@@ -12,26 +12,26 @@ from app.models.review import Review
 from app.models.topic import Topic
 from app.models.feedback import Feedback
 from app.models.user import User
-from app.routers.auth import get_optional_user
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/stats", tags=["Stats"])
 
 
-def _scope_article_query(query, current_user: User | None):
-    if current_user and current_user.role in ("reporter", "user"):
+def _scope_article_query(query, current_user: User):
+    if current_user.role in ("reporter", "user"):
         query = query.filter(Article.author_id == current_user.id)
     return query
 
 
-def _scope_clue_query(query, current_user: User | None):
-    if current_user and current_user.role in ("reporter", "user"):
+def _scope_clue_query(query, current_user: User):
+    if current_user.role in ("reporter", "user"):
         query = query.filter(Clue.creator_id == current_user.id)
     return query
 
 
 @router.get("/dashboard")
-async def get_dashboard(
-    current_user: User | None = Depends(get_optional_user),
+def get_dashboard(
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     article_query = _scope_article_query(db.query(Article), current_user)

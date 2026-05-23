@@ -10,7 +10,7 @@ from app.database import get_db
 from app.models.feedback import Feedback
 from app.models.article import Article
 from app.models.user import User
-from app.routers.auth import get_optional_user
+from app.routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/feedback", tags=["Feedback"])
 
@@ -36,8 +36,8 @@ def _feedback_summary(article: Article, feedback: Optional[Feedback] = None) -> 
     }
 
 
-def _scope_article_query(query, current_user: Optional[User]):
-    if current_user and current_user.role in ("reporter", "user"):
+def _scope_article_query(query, current_user: User):
+    if current_user.role in ("reporter", "user"):
         query = query.filter(Article.author_id == current_user.id)
     return query
 
@@ -63,6 +63,14 @@ def _upsert_feedback(db: Session, article: Article) -> Feedback:
     feedback.trending_score = round(min(100.0, (feedback.view_count or 0) * 0.5 + (feedback.like_count or 0) * 3 + (feedback.comment_count or 0) * 4 + (feedback.share_count or 0) * 5), 2)
     article.view_count = feedback.view_count
     article.like_count = feedback.like_count
+    return feedback
+
+
+def ensure_feedback_for_article(db: Session, article: Article) -> Feedback:
+    """确保已发布稿件即使 0 数据也有反馈记录。"""
+    feedback = _upsert_feedback(db, article)
+    if not article.published_at:
+        article.published_at = datetime.now(timezone.utc)
     return feedback
 
 
@@ -97,7 +105,7 @@ def _load_article_feedback_rows(
 @router.get("/stats")
 async def get_feedback_stats(
     days: int = 7,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = _scope_article_query(db.query(Article).filter(Article.status == "published"), current_user)
@@ -138,13 +146,16 @@ async def list_feedback_articles(
     days: int = 7,
     page: int = 1,
     page_size: int = 50,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = _scope_article_query(db.query(Article).filter(Article.status == "published"), current_user)
-    query = _filter_recent_articles(query, days).order_by(desc(func.coalesce(Article.published_at, Article.updated_at, Article.created_at)))
+    query = query.order_by(desc(func.coalesce(Article.published_at, Article.updated_at, Article.created_at)))
     total = query.count()
     articles = query.offset((page - 1) * page_size).limit(page_size).all()
+    for article in articles:
+        ensure_feedback_for_article(db, article)
+    db.commit()
     rows = _load_article_feedback_rows(db, articles)
     rows.sort(key=lambda item: (item["trending_score"], item["view_count"], item["updated_at"]), reverse=True)
     return {
@@ -159,7 +170,7 @@ async def list_feedback_articles(
 @router.get("/trends")
 async def get_feedback_trends(
     days: int = 7,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     today = datetime.now(timezone.utc).date()
@@ -201,7 +212,7 @@ async def get_feedback_trends(
 @router.get("/{article_id}")
 async def get_feedback_by_article(
     article_id: int,
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     article = _scope_article_query(db.query(Article), current_user).filter(Article.id == article_id).first()

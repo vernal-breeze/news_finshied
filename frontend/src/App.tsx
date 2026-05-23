@@ -206,15 +206,63 @@ function App() {
           />
           <Route
             path="/editor/admin"
+            element={<Navigate to="/editor/admin/users" replace />}
+          />
+          <Route
+            path="/editor/admin/users"
             element={
               <AdminRoute>
                 <Layout style={{ minHeight: '100vh' }}>
                   <MainLayout>
-                    <AdminDashboard />
+                    <AdminDashboard tabKey="all" />
                   </MainLayout>
                 </Layout>
               </AdminRoute>
             }
+          />
+          <Route
+            path="/editor/admin/admins"
+            element={
+              <AdminRoute>
+                <Layout style={{ minHeight: '100vh' }}>
+                  <MainLayout>
+                    <AdminDashboard tabKey="admin" />
+                  </MainLayout>
+                </Layout>
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/editor/admin/reviewers"
+            element={
+              <AdminRoute>
+                <Layout style={{ minHeight: '100vh' }}>
+                  <MainLayout>
+                    <AdminDashboard tabKey="reviewer" />
+                  </MainLayout>
+                </Layout>
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/editor/admin/editors"
+            element={
+              <AdminRoute>
+                <Layout style={{ minHeight: '100vh' }}>
+                  <MainLayout>
+                    <AdminDashboard tabKey="editor" />
+                  </MainLayout>
+                </Layout>
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/editor/admin/reporters"
+            element={<Navigate to="/editor/admin/editors" replace />}
+          />
+          <Route
+            path="/editor/admin/readers"
+            element={<Navigate to="/editor/admin/users" replace />}
           />
 
           {/* 兼容旧路径 */}

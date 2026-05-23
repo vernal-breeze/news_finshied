@@ -1,42 +1,39 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
-  Alert,
   Badge,
   Button,
   Card,
-  Col,
   Descriptions,
-  Empty,
+  Divider,
+  Drawer,
+  Form,
   Input,
+  Modal,
   Popconfirm,
-  Progress,
-  Row,
   Select,
   Space,
-  Statistic,
   Table,
   Tag,
   Typography,
 } from 'antd'
 import type { TableProps } from 'antd'
 import {
-  BarChartOutlined,
-  CheckCircleOutlined,
-  DashboardOutlined,
+  AuditOutlined,
   DeleteOutlined,
-  FileTextOutlined,
+  EyeOutlined,
+  KeyOutlined,
   ReloadOutlined,
-  SafetyCertificateOutlined,
   SearchOutlined,
-  SettingOutlined,
   TeamOutlined,
-  UserSwitchOutlined,
+  UserOutlined,
 } from '@ant-design/icons'
-import { adminAPI, settingsAPI, unwrapPaginated } from '../../services/api'
+import { adminAPI, articleAPI, unwrapPaginated } from '../../services/api'
 import { toast } from '../../components/common/Toast'
 
 const { Text, Paragraph } = Typography
 const { Option } = Select
+
+export type AdminUserTabKey = 'all' | 'admin' | 'reviewer' | 'editor'
 
 interface AdminUser {
   id: number
@@ -57,41 +54,13 @@ interface AdminUser {
   clue_count: number
 }
 
-interface AdminOverview {
-  users: {
-    total: number
-    active: number
-    inactive: number
-    reviewers: number
-    reporters: number
-    editors: number
-    by_role: Array<{ role: string; label: string; count: number }>
-  }
-  content: {
-    articles: number
-    clues: number
-    reviews: number
-    published: number
-    draft: number
-    pending_review: number
-    recent_articles_7days: number
-    recent_clues_7days: number
-  }
-  traffic: {
-    views: number
-    likes: number
-  }
-  recent_users: AdminUser[]
-}
-
-interface SystemSettings {
-  site_name: string
-  description: string
-  allow_registration: boolean
-  require_ai_check: boolean
-  email_notification?: boolean
-  review_timeout_hours: number
-  min_word_count: number
+interface AdminArticle {
+  id: number
+  title: string
+  status: string
+  category: string
+  created_at: string
+  updated_at: string
 }
 
 const roleColor: Record<string, string> = {
@@ -103,6 +72,18 @@ const roleColor: Record<string, string> = {
   user: 'cyan',
 }
 
+const userTabs: Array<{
+  key: AdminUserTabKey
+  label: string
+  roles?: string[]
+  icon: ReactNode
+}> = [
+  { key: 'all', label: '全部内部人员', roles: ['admin', 'reviewer', 'reporter', 'editor', 'chief_editor'], icon: <TeamOutlined /> },
+  { key: 'admin', label: '管理员', roles: ['admin'], icon: <UserOutlined /> },
+  { key: 'reviewer', label: '审核员', roles: ['reviewer'], icon: <AuditOutlined /> },
+  { key: 'editor', label: '编辑人员', roles: ['reporter', 'editor', 'chief_editor'], icon: <UserOutlined /> },
+]
+
 const formatDate = (value?: string) => {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN', {
@@ -113,47 +94,44 @@ const formatDate = (value?: string) => {
   })
 }
 
-const AdminDashboard = () => {
-  const [overview, setOverview] = useState<AdminOverview | null>(null)
-  const [settings, setSettings] = useState<SystemSettings | null>(null)
+interface AdminDashboardProps {
+  tabKey?: AdminUserTabKey
+}
+
+const AdminDashboard = ({ tabKey = 'all' }: AdminDashboardProps) => {
+  const [passwordForm] = Form.useForm()
   const [users, setUsers] = useState<AdminUser[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [tableLoading, setTableLoading] = useState(false)
+  const [articlesLoading, setArticlesLoading] = useState(false)
   const [search, setSearch] = useState('')
-  const [role, setRole] = useState<string | undefined>()
   const [activeState, setActiveState] = useState<string>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null)
+  const [selectedArticles, setSelectedArticles] = useState<AdminArticle[]>([])
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
+  const [resettingPassword, setResettingPassword] = useState(false)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
 
-  const activeRate = useMemo(() => {
-    if (!overview?.users.total) return 0
-    return Math.round((overview.users.active / overview.users.total) * 100)
-  }, [overview])
-
-  const loadOverview = async () => {
-    try {
-      const [overviewRes, settingsRes] = await Promise.all([
-        adminAPI.overview(),
-        settingsAPI.get(),
-      ])
-      setOverview((overviewRes as { data?: AdminOverview }).data || null)
-      setSettings((settingsRes as { data?: SystemSettings }).data || null)
-    } catch (error) {
-      toast.error('获取管理员概览失败，请确认当前账号为管理员')
-    }
-  }
+  const activeTab = userTabs.find((item) => item.key === tabKey) || userTabs[0]
+  const canManageSelectedUser = selectedUser
+    ? ['reporter', 'editor', 'chief_editor'].includes(selectedUser.role)
+    : false
 
   const loadUsers = async () => {
     setTableLoading(true)
     try {
+      const roleParams = activeTab.roles || []
       const params: Record<string, unknown> = {
         page,
         page_size: pageSize,
       }
       if (search.trim()) params.search = search.trim()
-      if (role) params.role = role
+      if (roleParams.length === 1) params.role = roleParams[0]
+      if (roleParams.length > 1) params.roles = roleParams.join(',')
       if (activeState !== 'all') params.is_active = activeState === 'active'
       const res = await adminAPI.users(params)
       const { items, total: totalCount } = unwrapPaginated<AdminUser>(res)
@@ -171,19 +149,23 @@ const AdminDashboard = () => {
   const refreshAll = async () => {
     setLoading(true)
     try {
-      await Promise.all([loadOverview(), loadUsers()])
+      await loadUsers()
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    loadOverview()
-  }, [])
+    loadUsers()
+  }, [page, pageSize, tabKey, activeState])
 
   useEffect(() => {
-    loadUsers()
-  }, [page, pageSize, role, activeState])
+    setPage(1)
+    setSearch('')
+    setSelectedUser(null)
+    setSelectedArticles([])
+    setDetailOpen(false)
+  }, [tabKey])
 
   const handleSearch = () => {
     if (page !== 1) {
@@ -193,23 +175,79 @@ const AdminDashboard = () => {
     loadUsers()
   }
 
+  const openDetail = (record: AdminUser) => {
+    setSelectedUser(record)
+    setDetailOpen(true)
+    loadUserArticles(record.id)
+  }
+
+  const closeDetail = () => {
+    setDetailOpen(false)
+  }
+
+  const loadUserArticles = async (userId: number) => {
+    setArticlesLoading(true)
+    try {
+      const res = await articleAPI.list({ author_id: userId, page_size: 20 })
+      const { items } = unwrapPaginated<AdminArticle>(res)
+      setSelectedArticles(items)
+    } catch (error) {
+      setSelectedArticles([])
+      toast.error('获取人员稿件失败')
+    } finally {
+      setArticlesLoading(false)
+    }
+  }
+
+  const handleResetPassword = async (values: { new_password: string }) => {
+    if (!selectedUser) return
+    setResettingPassword(true)
+    try {
+      await adminAPI.resetUserPassword(selectedUser.id, values.new_password)
+      toast.success('密码已重置')
+      setPasswordModalOpen(false)
+      passwordForm.resetFields()
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail || error?.response?.data?.message
+      toast.error(detail || '重置密码失败')
+    } finally {
+      setResettingPassword(false)
+    }
+  }
+
   const handleDeleteUser = async (user: AdminUser) => {
     setDeletingUserId(user.id)
     try {
       await adminAPI.deleteUser(user.id)
       toast.success(`已删除账号：${user.username}`)
+      setDetailOpen(false)
+      setSelectedUser(null)
+      setSelectedArticles([])
       if (users.length === 1 && page > 1) {
         setPage(page - 1)
       } else {
         await loadUsers()
       }
-      await loadOverview()
     } catch (error: any) {
       const detail = error?.response?.data?.detail || error?.response?.data?.message
       toast.error(detail || '删除人员账号失败')
     } finally {
       setDeletingUserId(null)
     }
+  }
+
+  const getArticleStatusTag = (status: string) => {
+    const map: Record<string, { color: string; text: string }> = {
+      draft: { color: 'default', text: '草稿' },
+      pending_review: { color: 'orange', text: '待审核' },
+      reviewing: { color: 'blue', text: '审核中' },
+      approved: { color: 'green', text: '已通过' },
+      rejected: { color: 'red', text: '已拒绝' },
+      published: { color: 'green', text: '已发布' },
+      archived: { color: 'default', text: '已归档' },
+    }
+    const item = map[status] || { color: 'default', text: status || '-' }
+    return <Tag color={item.color}>{item.text}</Tag>
   }
 
   const columns: TableProps<AdminUser>['columns'] = [
@@ -271,20 +309,6 @@ const AdminDashboard = () => {
       ),
     },
     {
-      title: '产出数据',
-      key: 'metrics',
-      width: 280,
-      render: (_value, record) => (
-        <Space wrap size={[6, 4]}>
-          <Tag>稿件 {record.article_count}</Tag>
-          <Tag color="green">发布 {record.published_count}</Tag>
-          <Tag color="orange">待审 {record.pending_review_count}</Tag>
-          <Tag color="blue">线索 {record.clue_count}</Tag>
-          <Tag color="purple">审核 {record.review_count}</Tag>
-        </Space>
-      ),
-    },
-    {
       title: '加入时间',
       dataIndex: 'created_at',
       key: 'created_at',
@@ -294,28 +318,37 @@ const AdminDashboard = () => {
     {
       title: '操作',
       key: 'action',
+      width: 96,
       fixed: 'right',
-      width: 100,
       render: (_value, record) => (
-        <Popconfirm
-          title="确认删除人员账号？"
-          description={`删除后将无法登录，历史稿件和线索会保留。账号：${record.username}`}
-          okText="确认删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true, loading: deletingUserId === record.id }}
-          onConfirm={() => handleDeleteUser(record)}
-        >
-          <Button
-            type="text"
-            danger
-            size="small"
-            icon={<DeleteOutlined />}
-            loading={deletingUserId === record.id}
-          >
-            删除
-          </Button>
-        </Popconfirm>
+        <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => openDetail(record)}>
+          查看
+        </Button>
       ),
+    },
+  ]
+
+  const articleColumns: TableProps<AdminArticle>['columns'] = [
+    {
+      title: '稿件',
+      dataIndex: 'title',
+      key: 'title',
+      ellipsis: true,
+      render: (value: string) => <Text strong>{value || '未命名稿件'}</Text>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 92,
+      render: getArticleStatusTag,
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
+      key: 'updated_at',
+      width: 112,
+      render: (value: string) => <Text type="secondary">{formatDate(value)}</Text>,
     },
   ]
 
@@ -324,143 +357,8 @@ const AdminDashboard = () => {
       <Card
         title={
           <Space>
-            <DashboardOutlined style={{ color: 'var(--app-primary)' }} />
-            <span style={{ fontWeight: 600 }}>管理员控制台</span>
-          </Space>
-        }
-        extra={
-          <Button icon={<ReloadOutlined />} onClick={refreshAll} loading={loading}>
-            刷新
-          </Button>
-        }
-        style={{ borderRadius: 12, marginBottom: 16 }}
-      >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 16, borderRadius: 8 }}
-          message="管理员端用于查看系统配置、数据监控、统计报表，以及管理审核员、记者和编辑人员。"
-        />
-
-        <Row gutter={[16, 16]}>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small" style={{ borderRadius: 10 }}>
-              <Statistic
-                title="系统人员"
-                value={overview?.users.total || 0}
-                prefix={<TeamOutlined />}
-                suffix={<Text type="secondary" style={{ fontSize: 12 }}>人</Text>}
-              />
-              <Progress percent={activeRate} size="small" strokeColor="#52c41a" style={{ marginTop: 8 }} />
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small" style={{ borderRadius: 10 }}>
-              <Statistic
-                title="稿件总量"
-                value={overview?.content.articles || 0}
-                prefix={<FileTextOutlined />}
-              />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                已发布 {overview?.content.published || 0} · 待审 {overview?.content.pending_review || 0}
-              </Text>
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small" style={{ borderRadius: 10 }}>
-              <Statistic
-                title="新闻线索"
-                value={overview?.content.clues || 0}
-                prefix={<BarChartOutlined />}
-              />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                近 7 天新增 {overview?.content.recent_clues_7days || 0}
-              </Text>
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} lg={6}>
-            <Card size="small" style={{ borderRadius: 10 }}>
-              <Statistic
-                title="阅读反馈"
-                value={overview?.traffic.views || 0}
-                prefix={<CheckCircleOutlined />}
-              />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                点赞 {overview?.traffic.likes || 0}
-              </Text>
-            </Card>
-          </Col>
-        </Row>
-      </Card>
-
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} lg={12}>
-          <Card
-            title={
-              <Space>
-                <SettingOutlined />
-                <span>系统配置概览</span>
-              </Space>
-            }
-            style={{ borderRadius: 12, height: '100%' }}
-          >
-            {settings ? (
-              <Descriptions column={1} size="small" bordered labelStyle={{ width: 150 }}>
-                <Descriptions.Item label="系统名称">{settings.site_name}</Descriptions.Item>
-                <Descriptions.Item label="系统说明">{settings.description}</Descriptions.Item>
-                <Descriptions.Item label="注册开关">
-                  <Tag color={settings.allow_registration ? 'green' : 'red'}>
-                    {settings.allow_registration ? '开放注册' : '关闭注册'}
-                  </Tag>
-                  <Tag color={settings.require_ai_check ? 'purple' : 'default'}>
-                    {settings.require_ai_check ? '启用 AI 检查' : '未启用 AI 检查'}
-                  </Tag>
-                  <Tag color={settings.email_notification ? 'blue' : 'default'}>
-                    {settings.email_notification ? '通知开启' : '通知关闭'}
-                  </Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label="审核超时">{settings.review_timeout_hours} 小时</Descriptions.Item>
-                <Descriptions.Item label="最低字数">{settings.min_word_count} 字</Descriptions.Item>
-              </Descriptions>
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无配置数据" />
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card
-            title={
-              <Space>
-                <UserSwitchOutlined />
-                <span>角色分布</span>
-              </Space>
-            }
-            style={{ borderRadius: 12, height: '100%' }}
-          >
-            <Row gutter={[12, 12]}>
-              {(overview?.users.by_role || []).map((item) => (
-                <Col xs={12} sm={8} key={item.role}>
-                  <Card size="small" style={{ borderRadius: 8, textAlign: 'center' }}>
-                    <Tag color={roleColor[item.role] || 'default'} style={{ marginBottom: 8 }}>
-                      {item.label}
-                    </Tag>
-                    <Statistic value={item.count} valueStyle={{ fontSize: 22 }} />
-                  </Card>
-                </Col>
-              ))}
-            </Row>
-            {!overview?.users.by_role?.length && (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无人员数据" />
-            )}
-          </Card>
-        </Col>
-      </Row>
-
-      <Card
-        title={
-          <Space>
-            <SafetyCertificateOutlined style={{ color: '#722ed1' }} />
-            <span>人员查看</span>
+            <TeamOutlined style={{ color: 'var(--app-primary)' }} />
+            <span style={{ fontWeight: 600 }}>{activeTab.label}</span>
             <Badge count={total} overflowCount={999} style={{ backgroundColor: 'var(--app-primary)' }} />
           </Space>
         }
@@ -476,23 +374,6 @@ const AdminDashboard = () => {
               style={{ width: 220 }}
             />
             <Select
-              allowClear
-              placeholder="角色"
-              value={role}
-              onChange={(value) => {
-                setRole(value)
-                setPage(1)
-              }}
-              style={{ width: 120 }}
-            >
-              <Option value="reviewer">审核员</Option>
-              <Option value="reporter">记者</Option>
-              <Option value="editor">编辑</Option>
-              <Option value="chief_editor">主编</Option>
-              <Option value="admin">管理员</Option>
-              <Option value="user">投稿用户</Option>
-            </Select>
-            <Select
               value={activeState}
               onChange={(value) => {
                 setActiveState(value)
@@ -507,12 +388,15 @@ const AdminDashboard = () => {
             <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>
               查询
             </Button>
+            <Button icon={<ReloadOutlined />} onClick={refreshAll} loading={loading}>
+              刷新
+            </Button>
           </Space>
         }
         style={{ borderRadius: 12 }}
       >
         <Paragraph type="secondary" style={{ marginTop: 0 }}>
-          这里用于查看和删除审核员、记者、编辑等账号。删除账号不会清除历史稿件、线索和审核记录。
+          当前页面仅用于查看{activeTab.key === 'all' ? '系统中的管理员、审核员和编辑人员账号' : `${activeTab.label}账号`}，投稿用户不在管理员端展示。
         </Paragraph>
         <Table
           rowKey="id"
@@ -520,7 +404,7 @@ const AdminDashboard = () => {
           loading={tableLoading}
           columns={columns}
           dataSource={users}
-          scroll={{ x: 980 }}
+          scroll={{ x: 760 }}
           pagination={{
             current: page,
             pageSize,
@@ -534,6 +418,148 @@ const AdminDashboard = () => {
           }}
         />
       </Card>
+      <Drawer
+        title={
+          <Space>
+            <EyeOutlined />
+            <span>用户详情</span>
+          </Space>
+        }
+        width={720}
+        open={detailOpen}
+        onClose={closeDetail}
+        destroyOnClose
+      >
+        {selectedUser && (
+          <>
+            <Space align="center" style={{ marginBottom: 20 }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 10,
+                  background: 'var(--app-primary-muted)',
+                  color: 'var(--app-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 18,
+                  fontWeight: 700,
+                }}
+              >
+                {(selectedUser.full_name || selectedUser.nickname || selectedUser.username)
+                  .slice(0, 1)
+                  .toUpperCase()}
+              </div>
+              <div>
+                <Text strong style={{ display: 'block' }}>
+                  {selectedUser.full_name || selectedUser.nickname || selectedUser.username}
+                </Text>
+                <Space size={6}>
+                  <Tag color={roleColor[selectedUser.role] || 'default'}>
+                    {selectedUser.role_label || selectedUser.role}
+                  </Tag>
+                  <Badge
+                    status={selectedUser.is_active ? 'success' : 'default'}
+                    text={selectedUser.is_active ? '启用' : '停用'}
+                  />
+                </Space>
+              </div>
+            </Space>
+
+            {canManageSelectedUser && (
+              <Space style={{ marginBottom: 16 }}>
+                <Button
+                  icon={<KeyOutlined />}
+                  onClick={() => {
+                    passwordForm.resetFields()
+                    setPasswordModalOpen(true)
+                  }}
+                >
+                  重置密码
+                </Button>
+                <Popconfirm
+                  title="确认删除编辑人员账号？"
+                  description="删除账号后无法登录，历史稿件会保留但不再绑定到该账号。"
+                  okText="确认删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true, loading: deletingUserId === selectedUser.id }}
+                  onConfirm={() => handleDeleteUser(selectedUser)}
+                >
+                  <Button danger icon={<DeleteOutlined />} loading={deletingUserId === selectedUser.id}>
+                    删除账号
+                  </Button>
+                </Popconfirm>
+              </Space>
+            )}
+
+            <Descriptions column={1} size="small" bordered labelStyle={{ width: 92 }}>
+              <Descriptions.Item label="账号">@{selectedUser.username}</Descriptions.Item>
+              <Descriptions.Item label="邮箱">
+                {selectedUser.email || <Text type="secondary">未填写</Text>}
+              </Descriptions.Item>
+              <Descriptions.Item label="昵称">
+                {selectedUser.nickname || <Text type="secondary">未填写</Text>}
+              </Descriptions.Item>
+              <Descriptions.Item label="加入时间">
+                {formatDate(selectedUser.created_at)}
+              </Descriptions.Item>
+              <Descriptions.Item label="更新时间">
+                {formatDate(selectedUser.updated_at)}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left" plain>
+              业务数据
+            </Divider>
+            <Descriptions column={2} size="small" bordered>
+              <Descriptions.Item label="稿件">{selectedUser.article_count}</Descriptions.Item>
+              <Descriptions.Item label="已发布">{selectedUser.published_count}</Descriptions.Item>
+              <Descriptions.Item label="待审核">{selectedUser.pending_review_count}</Descriptions.Item>
+              <Descriptions.Item label="草稿">{selectedUser.draft_count}</Descriptions.Item>
+              <Descriptions.Item label="线索">{selectedUser.clue_count}</Descriptions.Item>
+              <Descriptions.Item label="审核">{selectedUser.review_count}</Descriptions.Item>
+            </Descriptions>
+
+            <Divider orientation="left" plain>
+              投稿稿件
+            </Divider>
+            <Table
+              rowKey="id"
+              size="small"
+              loading={articlesLoading}
+              columns={articleColumns}
+              dataSource={selectedArticles}
+              pagination={false}
+              scroll={{ x: 540 }}
+              locale={{ emptyText: '暂无投稿稿件' }}
+            />
+          </>
+        )}
+      </Drawer>
+
+      <Modal
+        title="重置编辑人员密码"
+        open={passwordModalOpen}
+        onOk={() => passwordForm.submit()}
+        onCancel={() => setPasswordModalOpen(false)}
+        confirmLoading={resettingPassword}
+        okText="确认重置"
+        cancelText="取消"
+      >
+        <Form form={passwordForm} layout="vertical" onFinish={handleResetPassword}>
+          <Form.Item
+            name="new_password"
+            label="新密码"
+            rules={[
+              { required: true, message: '请输入新密码' },
+              { min: 6, message: '密码至少 6 位' },
+            ]}
+          >
+            <Input.Password placeholder="请输入新密码" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }
